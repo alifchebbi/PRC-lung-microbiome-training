@@ -186,4 +186,4 @@ microbiome, vegan, ggplot2, dplyr, tidyr, readr, patchwork, ape, here, rmarkdown
 
 ## Remerciements
 
-Un grand merci au **Dr. Houcemeddine Othman**, qui a animé la troisième journée (Day 2) de la formation, pour cette journée remarquable et pour sa précieuse collaboration.
+Un grand merci au **Dr. Houcemeddine Othman**, qui a animé la 2eme journée (Day 2) de la formation, pour cette journée remarquable et pour sa précieuse collaboration.
