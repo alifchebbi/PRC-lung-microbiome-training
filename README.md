@@ -11,7 +11,7 @@
 ISBST, Université de la Manouba - **vendredi 13 novembre 2026**
 Formateur : Dr. Alif Chebbi (Day 1) 
 
-Cet atelier montre, pas à pas, comment analyser des données de séquençage 16S rRNA
+Cet atelier montre, pas à pas, comment analyser des données de séquençage 16S rRNA (Illumina NGS) 
 avec R : des fichiers FASTQ bruts jusqu'aux bactéries qui diffèrent entre la bronche atteinte de patients
 atteints d'un cancer du poumon et la bronche de témoins sans cancer.
 
