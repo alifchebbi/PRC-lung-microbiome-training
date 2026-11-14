@@ -1,0 +1,648 @@
+---
+title: "Partie 1 - Analyse en amont : des fichiers FASTQ aux ASV et à la taxonomie"
+subtitle: "16S rRNA V3-V4 - biopsies bronchiques : cancer du poumon vs témoins sans cancer (NCBI PRJNA586753)"
+author: "ISBST - Atelier microbiome"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+knit: (function(input, ...) rmarkdown::render(input, output_dir = file.path(dirname(input), "..", "reports")))
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include = FALSE}
+# Bloc caché : chaque bloc de code est lancé depuis le dossier du projet,
+# et les messages techniques sont masqués pour garder le rapport lisible.
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+```
+
+# Avant de commencer
+
+## C'est quoi ce document ?
+
+C'est un fichier **R Markdown**. Il mélange du **texte** (les explications), des **blocs de
+code** (les cases grises que R exécute) et des **résultats** (juste sous chaque bloc).
+C'est comme un cahier de TP : la consigne, la manipulation, puis le résultat.
+
+- **Avant tout**, ouvrez le projet en double-cliquant sur `Atelier_16S_cancer_poumon.Rproj` : R se place
+  alors dans le bon dossier de travail. Débutant ? Lisez d'abord `GUIDE_DEBUTANT.md` (dans `1_Atelier/`).
+- Cliquez sur **Knit** (en haut de l'éditeur RStudio) pour tout lancer et créer un rapport HTML dans `reports/`.
+- Ou lancez un bloc à la fois avec la **flèche verte** en haut à droite de chaque case grise.
+- Les résultats attendus (tableaux, figures, rapports HTML) sont dans le dossier **`2_Corrige/`**,
+  à côté de ce projet : comparez avec les vôtres à la fin, comme un corrigé de TP.
+
+## Qu'allons-nous faire ?
+
+On part des fichiers bruts du séquenceur et on arrive à un tableau qui dit
+*quelles bactéries* sont dans *quel échantillon* et *combien de lectures* chacune possède.
+
+C'est comme une **chaîne de préparation du couscous** : on part du blé brut, on le trie,
+on le lave, on le roule, on le sèche... et à la fin on a un produit propre et prêt à l'emploi.
+
+```
+FASTQ -> amorces -> contrôle qualité -> filtrage et coupe -> modèle d'erreurs
+      -> débruitage (ASV) -> fusion R1 + R2 -> suppression des chimères -> taxonomie (SILVA)
+```
+
+## Nos échantillons
+
+- **Étude :** microbiote du cancer du poumon central, Saragosse (Espagne), NCBI BioProject
+  PRJNA586753 (Archivos de Bronconeumología, 2020).
+- **Échantillons :** **biopsies bronchiques** prises pendant une bronchoscopie.
+- **Séquençage :** gène de l'ARNr 16S, **régions V3-V4** (amorces 341F / 805R),
+  Illumina MiSeq, paired-end 2 x 300 pb.
+- **Notre sélection : 10 échantillons**
+  - **Cancer** = biopsie du bronche atteint par la tumeur, chez 5 patients (TU01 à TU05) ;
+  - **Control** = biopsie bronchique de 5 personnes **sans cancer** (HC01 à HC05).
+  - La correspondance avec les numéros de l'étude (P02, C05...) est dans
+    `metadata/sample_metadata.tsv` et la méthode de sélection dans `metadata/selection_method.md`.
+
+C'est un plan **cas-témoins** : on compare deux groupes de personnes différentes, comme
+comparer la taille moyenne des élèves de deux classes.
+
+> **Deux choix faits par le formateur, pour l'atelier :**
+>
+> 1. **Moins de lectures.** Chaque échantillon a été réduit au hasard à **5 000 paires de
+>    lectures** (graine fixe, R1 et R2 gardés ensemble). C'est comme goûter une cuillère de
+>    soupe au lieu de boire toute la marmite : le goût est le même, et ça va beaucoup plus
+>    vite sur un ordinateur portable.
+> 2. **Des échantillons choisis pour montrer une différence.** Parmi les 25 patients et 16
+>    témoins de l'étude, nous avons gardé les 5 + 5 biopsies dont la composition sépare le
+>    mieux les deux groupes. C'est un **choix pédagogique** : il **exagère** la différence.
+>    Les p-values de cet atelier servent à apprendre les méthodes, **pas** à conclure sur le
+>    cancer du poumon.
+
+> **Important :** une biopsie bronchique contient très peu de bactéries (**faible biomasse
+> microbienne**). Une petite contamination par les réactifs ou le labo peut devenir une
+> grande partie du signal. C'est comme écouter quelqu'un qui chuchote dans une pièce
+> bruyante : le bruit de fond peut couvrir sa voix.
+
+# Étape 1 - Charger les packages
+
+Un package, c'est un appareil qu'on ajoute à la cuisine R. On les "branche" avec `library()`.
+
+```{r packages}
+library(here)        # retrouver les fichiers dans le projet (comme un GPS pour les dossiers)
+library(dada2)       # l'outil principal : des lectures aux ASV
+library(ggplot2)     # les figures
+library(dplyr)       # manipuler les tableaux
+library(tidyr)       # changer la forme des tableaux
+
+packageVersion("dada2")     # on note la version : c'est la reproductibilité
+```
+
+# Étape 2 - Petit contrôle de l'ordinateur
+
+```{r computer}
+data.frame(
+  Item  = c("Project folder", "R version", "Bioconductor", "CPU cores",
+            "FASTQ files", "SILVA training set", "SILVA species file"),
+  Value = c(basename(here()),     # doit être 1_Atelier : sinon, voir GUIDE_DEBUTANT.md
+            R.version.string,
+            as.character(BiocManager::version()),
+            parallel::detectCores(),
+            length(list.files(here("data", "raw_fastq"), pattern = "fastq.gz$")),
+            file.exists(here("data", "reference_db", "silva_nr99_v138.1_train_set.fa.gz")),
+            file.exists(here("data", "reference_db", "silva_species_assignment_v138.1.fa.gz")))
+)
+```
+
+**Comment lire ce résultat :** la première ligne doit indiquer le dossier du projet
+(`1_Atelier`, ou `2_Corrige` dans le corrigé). Si R ne trouve pas les fichiers, le dossier de
+travail est faux : rouvrez le projet avec le fichier `.Rproj` (voir `GUIDE_DEBUTANT.md`).
+On attend ensuite 20 fichiers FASTQ (10 échantillons x 2 lectures).
+Les fichiers SILVA sont **optionnels** dans cet atelier : s'ils affichent `FALSE`, l'étape 14
+charge la taxonomie déjà calculée par le formateur avec les mêmes fichiers SILVA. SILVA est la
+base de référence qui sert à donner un nom aux bactéries
+(fichiers officiels pour DADA2 : <https://zenodo.org/records/4587955>).
+
+## Les réglages que vous pouvez changer
+
+Tous les paramètres sont regroupés ici, comme le tableau de bord d'une voiture : on règle
+tout au même endroit, sans fouiller dans le moteur.
+
+```{r parameters}
+# Utiliser plusieurs coeurs du processeur en même temps ?
+# FALSE = un seul coeur : plus lent mais fiable partout. Nos données sont petites,
+# donc on garde FALSE. (Sur Mac avec "Knit", TRUE peut bloquer ; sous Windows il est ignoré.)
+use_multithread <- FALSE
+
+# Longueur des amorces à retirer au début des lectures (étape 4)
+primer_forward <- "CCTACGGGNGGCWGCAG"       # 341F, 17 bases, au début de R1
+primer_reverse <- "GACTACHVGGGTATCTAATCC"   # 805R, 21 bases, au début de R2
+trim_left <- c(nchar(primer_forward), nchar(primer_reverse))
+
+# Où couper les lectures (en bases, comptées depuis le début de la lecture brute).
+# Voir l'étape 5 pour le choix de ces valeurs.
+trunc_forward <- 280
+trunc_reverse <- 220
+
+# Nombre maximal d'"erreurs attendues" accepté dans une lecture (forward, reverse)
+max_expected_errors <- c(2, 2)
+
+# Longueur attendue de la région V3-V4 sans les amorces, en bases (environ)
+expected_amplicon <- 427
+
+# Dossiers de sortie
+out_dir   <- here("outputs", "01_upstream")
+fig_dir   <- here("figures", "01_upstream")
+filt_dir  <- here("data", "filtered_fastq")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+# set.seed() : les étapes "au hasard" donnent le même résultat à chaque fois,
+# comme mélanger un jeu de cartes toujours de la même façon.
+set.seed(123)
+```
+
+# Étape 3 - Lire et vérifier le tableau des échantillons (métadonnées)
+
+Les fichiers FASTQ ne contiennent que des lectures d'ADN. Le tableau des **métadonnées**
+dit quel échantillon vient d'un patient avec cancer et lequel vient d'un témoin. C'est
+l'**étiquette du tube**. Si l'étiquette est fausse, **tous** les résultats sont faux : on la
+vérifie donc en premier, comme un pharmacien qui vérifie l'ordonnance avant de donner le
+médicament.
+
+```{r metadata}
+metadata <- read.delim(here("metadata", "sample_metadata.tsv"), stringsAsFactors = FALSE)
+
+# "Control" est le groupe de référence : les statistiques compareront Cancer à Control
+metadata$group <- factor(metadata$group, levels = c("Control", "Cancer"))
+
+knitr::kable(metadata[, c("sample_id", "run_accession", "group", "subject_id",
+                          "sample_type", "original_read_count")])
+```
+
+```{r metadata-checks}
+# Noms de fichiers attendus pour chaque échantillon
+# Chaque fichier porte le nom de son échantillon : TU01_R1.fastq.gz, HC03_R2.fastq.gz...
+# (le numéro d'origine dans la base SRA reste dans la colonne run_accession)
+metadata$fastq_R1 <- paste0(metadata$sample_id, "_R1.fastq.gz")
+metadata$fastq_R2 <- paste0(metadata$sample_id, "_R2.fastq.gz")
+
+# Une liste de contrôles, comme la check-list d'un pilote avant le décollage
+checks <- data.frame(
+  Check = c("Sample IDs are unique",
+            "Only 'Control' and 'Cancer' groups",
+            "5 samples in each group",
+            "One sample per person",
+            "Every sample has its R1 file",
+            "Every sample has its R2 file"),
+  Result = c(!any(duplicated(metadata$sample_id)),
+             all(!is.na(metadata$group)),
+             all(table(metadata$group) == 5),
+             !any(duplicated(metadata$subject_id)),
+             all(file.exists(here("data", "raw_fastq", metadata$fastq_R1))),
+             all(file.exists(here("data", "raw_fastq", metadata$fastq_R2))))
+)
+knitr::kable(checks)
+
+# Si un contrôle échoue, on s'arrête ici avec un message clair
+if (!all(checks$Result)) stop("A metadata check failed: fix the table before continuing.")
+```
+
+**Comment lire ce résultat :** chaque ligne doit être `TRUE`. Si une ligne est `FALSE`, le
+document s'arrête, car un mauvais tableau d'échantillons donnerait une fausse biologie.
+
+# Étape 4 - Les fichiers FASTQ et les amorces
+
+Un fichier FASTQ range chaque lecture sur **4 lignes**, comme une fiche :
+
+1. `@nom` de la lecture (le nom sur la fiche)
+2. la **séquence** d'ADN (A, C, G, T)
+3. `+` (un séparateur)
+4. la **qualité** de chaque base, écrite avec un caractère par base
+
+```{r fastq-example}
+# Chemins complets des fichiers, dans le même ordre que le tableau des métadonnées
+fnFs <- here("data", "raw_fastq", metadata$fastq_R1)   # lectures forward (R1)
+fnRs <- here("data", "raw_fastq", metadata$fastq_R2)   # lectures reverse (R2)
+sample_names <- metadata$sample_id
+
+# Afficher la première lecture du premier échantillon
+readLines(gzfile(fnFs[1]), n = 4)
+```
+
+**Comment lire ce résultat :** la ligne 2 commence par `CCTACGGG...` : c'est l'**amorce
+341F**. Les amorces sont les "colles" qui ont servi à la PCR ; elles ne viennent pas de la
+bactérie, elles viennent du tube. Il faut les retirer, comme on retire l'étiquette d'un
+vêtement neuf avant de le porter. La ligne 4 contient des caractères variés : ce sont de
+**vrais** scores de qualité.
+
+## Les amorces sont-elles bien au début de chaque lecture ?
+
+Les amorces contiennent des **bases dégénérées** : `N` = n'importe quelle base, `W` = A ou T,
+`H` = A, C ou T, `V` = A, C ou G. C'est comme un mot de passe où certaines lettres peuvent
+changer. On transforme ces lettres en "jokers" pour les chercher.
+
+```{r primer-check}
+# Transformer une amorce avec bases dégénérées en motif de recherche (expression régulière)
+iupac_to_regex <- function(p) {
+  codes <- c(N = "[ACGT]", W = "[AT]", H = "[ACT]", V = "[ACG]", R = "[AG]", Y = "[CT]",
+             S = "[CG]", K = "[GT]", M = "[AC]", B = "[CGT]", D = "[AGT]")
+  paste0("^", paste(sapply(strsplit(p, "")[[1]], function(b) ifelse(b %in% names(codes), codes[b], b)),
+                    collapse = ""))
+}
+percent_with_primer <- function(file, primer, n = 2000) {
+  reads <- as.character(ShortRead::sread(ShortRead::yield(ShortRead::FastqStreamer(file, n))))
+  round(100 * mean(grepl(iupac_to_regex(primer), reads)), 1)
+}
+primer_table <- data.frame(Sample = sample_names, Group = metadata$group,
+                           R1_starts_with_341F = sapply(fnFs, percent_with_primer, primer_forward),
+                           R2_starts_with_805R = sapply(fnRs, percent_with_primer, primer_reverse),
+                           row.names = NULL)
+knitr::kable(primer_table)
+```
+
+**Comment lire ce résultat :** le pourcentage de lectures qui commencent **exactement** par
+l'amorce. Les amorces sont toujours en position 0 (au tout début), donc on peut simplement
+couper les 17 premières bases de R1 et les 21 premières de R2 (`trimLeft`). Le pourcentage
+n'est pas 100 % : certaines lectures ont une petite erreur dans l'amorce, et d'autres viennent
+d'ADN **hors cible** (ADN humain amplifié par erreur), surtout quand il y a peu de bactéries.
+Comparez les deux groupes : les biopsies des témoins ont souvent encore moins d'ADN bactérien.
+
+> Avec des amorces à des positions variables, on utiliserait l'outil `cutadapt`.
+
+# Étape 5 - Contrôle qualité : où couper les lectures ?
+
+Le score de qualité **Q** dit à quel point la machine est sûre de chaque base :
+Q30 = 1 erreur sur 1 000 bases, Q20 = 1 sur 100. C'est comme quelqu'un qui lit une
+écriture manuscrite : au début de la page il lit bien, à la fin il est fatigué et se trompe
+plus. Sur MiSeq, la qualité est haute au début et baisse à la fin, surtout pour **R2**.
+
+```{r quality-plots, fig.height = 4}
+# plotQualityProfile() dessine la qualité à chaque position de la lecture
+# (ligne verte = qualité moyenne, orange = médiane et quartiles)
+# aggregate = TRUE : un seul graphique pour tous les échantillons
+plotQualityProfile(fnFs, aggregate = TRUE) + ggtitle("Forward reads (R1) - 10 samples") +
+  geom_vline(xintercept = trunc_forward, colour = "red", linetype = "dashed")
+plotQualityProfile(fnRs, aggregate = TRUE) + ggtitle("Reverse reads (R2) - 10 samples") +
+  geom_vline(xintercept = trunc_reverse, colour = "red", linetype = "dashed")
+```
+
+**Comment lire ces graphiques :** la ligne rouge en pointillé montre où nous coupons. Pour R1,
+la qualité reste bonne (au-dessus de Q30) jusqu'à environ 270 bases. Pour R2, elle baisse
+plus tôt, vers 210-230 bases. On coupe donc **R1 à 280** et **R2 à 220**, là où la qualité
+médiane commence à descendre. C'est comme couper le bout abîmé d'une baguette de pain : on
+garde la partie bonne.
+
+## La règle d'or : garder assez de chevauchement
+
+Après la coupe, R1 et R2 doivent encore **se chevaucher** pour que DADA2 puisse les
+recoller. C'est comme deux photos d'un panorama : pour les assembler, il faut une partie
+commune aux deux. DADA2 a besoin d'au moins 12 bases communes ; 20 ou plus, c'est plus sûr.
+
+```{r overlap}
+# Ce qui reste après la coupe ET le retrait des amorces
+kept_forward <- trunc_forward - trim_left[1]
+kept_reverse <- trunc_reverse - trim_left[2]
+overlap <- kept_forward + kept_reverse - expected_amplicon
+data.frame(R1_kept = kept_forward, R2_kept = kept_reverse,
+           Amplicon_without_primers = expected_amplicon, Overlap = overlap,
+           Enough_overlap = overlap >= 20)
+```
+
+**Comment lire ce résultat :** il reste `r kept_forward` bases de R1 et `r kept_reverse` de R2,
+soit `r kept_forward + kept_reverse` bases pour couvrir un amplicon d'environ
+`r expected_amplicon` bases : le chevauchement est d'environ `r overlap` bases. C'est assez,
+mais pas énorme : la région V3-V4 est longue. **Exercice :** que se passe-t-il si on coupe R2
+à 180 ?
+
+# Étape 6 - Filtrer et couper les lectures
+
+`filterAndTrim()` nettoie les lectures, comme on trie les lentilles avant la cuisson pour
+enlever les petits cailloux :
+
+- `trimLeft` : retirer les amorces au début de R1 et R2 ;
+- `truncLen` : couper chaque lecture à la longueur choisie (les lectures plus courtes sont retirées) ;
+- `maxN = 0` : retirer les lectures avec des bases inconnues (N), DADA2 ne les accepte pas ;
+- `maxEE` : retirer les lectures avec trop d'**erreurs attendues** (calculées à partir de la qualité) ;
+- `rm.phix = TRUE` : retirer les lectures de PhiX, un virus témoin ajouté pendant le séquençage.
+
+```{r filter}
+# Noms des fichiers nettoyés que DADA2 va créer
+filtFs <- file.path(filt_dir, paste0(sample_names, "_F_filt.fastq.gz"))
+filtRs <- file.path(filt_dir, paste0(sample_names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample_names
+names(filtRs) <- sample_names
+
+filter_out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs,
+                            trimLeft    = trim_left,
+                            truncLen    = c(trunc_forward, trunc_reverse),
+                            maxN        = 0,
+                            maxEE       = max_expected_errors,
+                            truncQ      = 2,
+                            rm.phix     = TRUE,
+                            compress    = TRUE,
+                            multithread = use_multithread)
+
+rownames(filter_out) <- sample_names
+filter_table <- data.frame(Sample = sample_names, Group = metadata$group,
+                           Reads_in  = filter_out[, "reads.in"],
+                           Reads_out = filter_out[, "reads.out"],
+                           Percent_kept = round(100 * filter_out[, "reads.out"] /
+                                                  filter_out[, "reads.in"], 1))
+knitr::kable(filter_table, row.names = FALSE)
+```
+
+**Comment lire ce résultat :** `Percent_kept` est le pourcentage de lectures qui ont passé le
+filtre. Avec de vraies données MiSeq 2 x 300, garder 60 à 80 % est normal : la fin de R2 est
+souvent de mauvaise qualité, et `maxEE` retire les lectures avec trop d'erreurs probables.
+
+# Étape 7 - Apprendre les taux d'erreur
+
+Les séquenceurs font des erreurs. DADA2 **apprend** à quelle fréquence chaque base est mal
+lue (par exemple un A lu comme un G) **en fonction du score de qualité**, à partir des données
+elles-mêmes. C'est comme une enseignante qui connaît les fautes habituelles d'un élève : si
+elle sait qu'il confond souvent "b" et "d" quand il écrit vite, elle peut deviner le mot juste.
+
+```{r learn-errors, fig.height = 6}
+errF <- learnErrors(filtFs, multithread = use_multithread)
+errR <- learnErrors(filtRs, multithread = use_multithread)
+
+plotErrors(errF, nominalQ = TRUE) + ggtitle("Error model - forward reads")
+```
+
+**Comment lire ce graphique :** chaque petit panneau est un type d'erreur (A2G = A lu comme G...).
+Les points noirs sont les erreurs observées, la ligne noire est le modèle appris par DADA2,
+et la ligne rouge est ce que le score de qualité "promet". Un bon modèle : la ligne noire
+suit les points, et le taux d'erreur **diminue** quand la qualité augmente (à droite).
+
+# Étape 8 - Débruitage : trouver les vraies séquences (ASV)
+
+`dada()` utilise le modèle d'erreurs pour décider, pour chaque séquence unique, si c'est
+une **vraie** séquence ou une **erreur** d'une séquence plus abondante.
+
+Exemple de la vie courante : si 1 000 personnes écrivent "Tunis" et 3 personnes écrivent
+"Tumis", on comprend que "Tumis" est une faute de frappe de "Tunis", pas une nouvelle ville.
+Mais si 300 personnes écrivent "Sousse", c'est une vraie ville différente.
+
+Les vraies séquences s'appellent des **ASV** (*Amplicon Sequence Variants*) : des séquences
+d'ADN exactes, qui peuvent différer d'une seule base. (Les anciennes méthodes regroupaient
+les séquences en OTU à 97 % de similarité, comme ranger "Tunis" et "Tunisie" dans la même boîte.)
+
+`pool = "pseudo"` permet à DADA2 de partager l'information entre échantillons, ce qui aide à
+détecter les séquences rares : utile pour les échantillons à faible biomasse.
+
+```{r dada}
+dadaFs <- dada(filtFs, err = errF, pool = "pseudo", multithread = use_multithread)
+dadaRs <- dada(filtRs, err = errR, pool = "pseudo", multithread = use_multithread)
+
+# Exemple : ce que DADA2 a trouvé dans le premier échantillon
+dadaFs[[1]]
+```
+
+**Comment lire ce résultat :** DADA2 indique combien de vrais variants de séquence il a
+trouvés, à partir de combien de séquences uniques, dans le premier échantillon.
+
+# Étape 9 - Fusionner les lectures forward et reverse
+
+Chaque R1 et son R2 viennent de la **même** molécule d'ADN, lue par les deux bouts. Comme elles
+se chevauchent, DADA2 peut les recoller en une seule séquence plus longue qui couvre toute la
+région V3-V4. C'est comme recoller les deux moitiés d'un billet déchiré : la partie commune
+permet de les aligner parfaitement.
+
+```{r merge}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, minOverlap = 12, verbose = FALSE)
+
+# Combien de paires de lectures ont été fusionnées dans chaque échantillon ?
+sapply(mergers, function(x) sum(x$abundance))
+```
+
+# Étape 10 - Construire la table des ASV
+
+La **table des ASV** est le résultat central : une **ligne par échantillon**, une **colonne par
+ASV**, et dans chaque case le **nombre de lectures**. C'est comme le registre de présence
+d'une école : une ligne par classe, une colonne par élève, et dans la case le nombre de jours
+de présence.
+
+```{r seqtab}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)     # nombre d'échantillons, nombre d'ASV
+
+# Longueur des séquences ASV : elles doivent être proches de la longueur de V3-V4
+table(nchar(getSequences(seqtab)))
+```
+
+**Comment lire ce résultat :** la longueur de V3-V4 varie un peu d'une bactérie à l'autre
+(environ 400 à 430 bases sans les amorces). Les séquences beaucoup plus courtes ou plus
+longues sont souvent des produits non spécifiques. On garde seulement les longueurs
+plausibles.
+
+```{r seqtab-length}
+keep_length <- nchar(getSequences(seqtab)) %in% 400:432
+seqtab <- seqtab[, keep_length]
+dim(seqtab)
+```
+
+# Étape 11 - Retirer les chimères
+
+Pendant la PCR, deux ADN différents peuvent se coller et former une **chimère** : une
+séquence artificielle, moitié d'une bactérie et moitié d'une autre. Elle n'existe pas dans
+la nature. Le nom vient de la Chimère de la mythologie, mi-lion mi-chèvre. C'est aussi
+comme un photomontage avec la tête d'une personne sur le corps d'une autre : ça ressemble
+à une vraie photo, mais cette personne n'existe pas. DADA2 les repère comme des séquences
+qu'on peut reconstruire à partir de deux "parents" plus abondants.
+
+```{r chimeras}
+seqtab_nochim <- removeBimeraDenovo(seqtab, method = "consensus",
+                                    multithread = use_multithread, verbose = TRUE)
+
+data.frame(
+  ASVs_before = ncol(seqtab),
+  ASVs_after  = ncol(seqtab_nochim),
+  Percent_reads_kept = round(100 * sum(seqtab_nochim) / sum(seqtab), 1)
+)
+```
+
+**Comment lire ce résultat :** les chimères sont souvent nombreuses en ASV mais faibles en
+lectures. Garder plus de 80-90 % des lectures est normal. Si beaucoup de lectures sont
+perdues, les amorces sont peut-être encore présentes.
+
+# Étape 12 - Suivre les lectures tout au long du pipeline
+
+On suit le nombre de lectures de chaque échantillon à chaque étape. C'est comme compter les
+passagers d'un bus à chaque arrêt : si le nombre chute d'un coup, on sait à quel arrêt
+le problème est arrivé.
+
+```{r track}
+getN <- function(x) sum(getUniques(x))    # petite aide : nombre total de lectures dans un objet DADA2
+
+track <- data.frame(
+  Sample       = sample_names,
+  Group        = metadata$group,
+  Input        = filter_out[, "reads.in"],
+  Filtered     = filter_out[, "reads.out"],
+  Denoised_F   = sapply(dadaFs, getN),
+  Denoised_R   = sapply(dadaRs, getN),
+  Merged       = sapply(mergers, getN),
+  Non_chimeric = rowSums(seqtab_nochim)
+)
+track$Percent_final <- round(100 * track$Non_chimeric / track$Input, 1)
+
+knitr::kable(track, row.names = FALSE)
+write.csv(track, file.path(out_dir, "read_tracking.csv"), row.names = FALSE)
+```
+
+```{r track-plot, fig.height = 5}
+track_long <- pivot_longer(track, cols = Input:Non_chimeric,
+                           names_to = "Step", values_to = "Reads")
+track_long$Step <- factor(track_long$Step,
+                          levels = c("Input", "Filtered", "Denoised_F", "Denoised_R",
+                                     "Merged", "Non_chimeric"))
+
+p_track <- ggplot(track_long, aes(x = Step, y = Reads, group = Sample, colour = Group)) +
+  geom_line(alpha = 0.7) + geom_point(size = 1.5) +
+  scale_colour_manual(values = c(Control = "#2E86AB", Cancer = "#C0392B")) +
+  labs(title = "Reads kept at each DADA2 step", x = NULL, y = "Number of reads") +
+  theme_bw() + theme(axis.text.x = element_text(angle = 30, hjust = 1))
+p_track
+ggsave(file.path(fig_dir, "read_tracking.png"), p_track, width = 8, height = 5, dpi = 300)
+ggsave(file.path(fig_dir, "read_tracking.pdf"), p_track, width = 8, height = 5)
+```
+
+**Comment lire ce graphique :** chaque ligne est un échantillon. Une chute brutale montre
+l'étape où les lectures ont été perdues : à *Filtered* (coupe trop longue, mauvaise qualité),
+à *Merged* (pas assez de chevauchement) ou à *Non_chimeric* (chimères, ou séquences de
+longueur non plausible retirées à l'étape 10, souvent de l'ADN humain hors cible). Une ligne régulière, qui garde la plupart des lectures, veut dire que le
+pipeline a bien marché.
+
+> **Regardez les témoins (en bleu) :** ils finissent avec beaucoup moins de lectures que les
+> patients. Leurs biopsies contiennent très peu d'ADN bactérien, donc une grande partie des
+> lectures vient d'ADN humain ou d'autres produits hors cible, retirés en route. C'est le
+> visage concret de la **faible biomasse**, et un piège : si un groupe a moins de vraies
+> bactéries, les contaminants y pèsent plus lourd.
+
+# Étape 13 - Donner un nom à chaque ASV (taxonomie)
+
+Un ASV n'est qu'une séquence d'ADN. Pour savoir **quelle bactérie** c'est, on la compare à la
+base de référence **SILVA** (version 138.1). C'est comme identifier une personne avec sa
+carte d'identité : pays, ville, quartier, famille, nom... Plus on descend, plus c'est
+précis, et plus c'est difficile.
+
+- `assignTaxonomy()` donne Règne -> Phylum -> Classe -> Ordre -> Famille -> Genre,
+  avec un classificateur qui ne donne un niveau que s'il est assez sûr
+  (`minBoot = 50`, 50 % de bootstrap). Comme un témoin qui dit "je suis sûr que c'était
+  un Tunisien de Sfax, mais je ne connais pas son nom de famille".
+- `addSpecies()` ajoute l'espèce **seulement** si l'ASV correspond **exactement**.
+
+```{r taxonomy}
+silva_train   <- here("data", "reference_db", "silva_nr99_v138.1_train_set.fa.gz")
+silva_species <- here("data", "reference_db", "silva_species_assignment_v138.1.fa.gz")
+
+saved_taxa <- here("outputs", "precomputed", "taxonomy_SILVA138.1.rds")
+
+if (file.exists(silva_train) && file.exists(silva_species)) {
+  # Version complète : classer les ASV avec SILVA (il faut les 2 fichiers SILVA, ~220 Mo, 2-5 min)
+  taxa <- assignTaxonomy(seqtab_nochim, silva_train, minBoot = 50,
+                         multithread = use_multithread)
+  taxa <- addSpecies(taxa, silva_species)
+} else {
+  # Version atelier : SILVA n'est pas dans le projet, donc on charge la taxonomie que le
+  # formateur a déjà calculée avec exactement les mêmes fichiers SILVA et les mêmes réglages.
+  message("SILVA files not found: loading the pre-computed taxonomy (", saved_taxa, ")")
+  taxa <- readRDS(saved_taxa)
+  stopifnot("Your ASVs differ from the pre-computed ones: download SILVA (see README)" =
+              all(colnames(seqtab_nochim) %in% rownames(taxa)))
+  taxa <- taxa[colnames(seqtab_nochim), , drop = FALSE]
+}
+
+# Noms courts pour les ASV : ASV001, ASV002... (comme des numéros de dossard)
+asv_seqs <- colnames(seqtab_nochim)
+asv_ids  <- sprintf("ASV%03d", seq_along(asv_seqs))
+```
+
+```{r taxonomy-summary}
+# Combien d'ASV ont un nom à chaque niveau ?
+level_names <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+data.frame(Level = level_names,
+           ASVs_named = colSums(!is.na(taxa[, level_names])),
+           Percent = round(100 * colSums(!is.na(taxa[, level_names])) / nrow(taxa), 1))
+```
+
+**Comment lire ce résultat :** presque tous les ASV doivent avoir un nom au niveau Règne et
+Phylum. Le pourcentage baisse au Genre et surtout à l'Espèce : même V3-V4 est trop courte
+pour séparer des espèces très proches.
+
+```{r non-bacterial}
+# Séquences qui ne sont PAS du 16S bactérien (à retirer dans la partie 2)
+data.frame(
+  Category = c("Not Bacteria (Archaea, Eukaryota, unknown)", "Chloroplast", "Mitochondria"),
+  ASVs = c(sum(is.na(taxa[, "Kingdom"]) | taxa[, "Kingdom"] != "Bacteria"),
+           sum(taxa[, "Order"]  %in% "Chloroplast"),
+           sum(taxa[, "Family"] %in% "Mitochondria"))
+)
+```
+
+**Comment lire ce résultat :** dans les biopsies, les amorces peuvent aussi amplifier l'ADN
+des **mitochondries** (qui descendent d'anciennes bactéries, comme des invités arrivés il y
+a si longtemps qu'ils font maintenant partie de la famille) et d'autres ADN hors cible. Ces
+ASV ne font pas partie du microbiome. On les garde pour l'instant et on les retire dans la
+partie 2.
+
+# Étape 14 - Sauvegarder les résultats
+
+```{r save}
+# 1. Objets R (rapides à recharger dans la partie 2 avec readRDS)
+saveRDS(seqtab_nochim, file.path(out_dir, "seqtab_nochim.rds"))
+saveRDS(taxa,          file.path(out_dir, "taxonomy.rds"))
+saveRDS(list(errF = errF, errR = errR), file.path(out_dir, "error_models.rds"))
+
+# 2. Tableaux qui s'ouvrent dans Excel, avec les noms courts des ASV
+asv_counts <- t(seqtab_nochim)                  # lignes = ASV, colonnes = échantillons
+rownames(asv_counts) <- asv_ids
+write.csv(asv_counts, file.path(out_dir, "ASV_counts.csv"))
+
+taxa_table <- data.frame(ASV_ID = asv_ids, taxa, Sequence = asv_seqs, row.names = NULL)
+write.csv(taxa_table, file.path(out_dir, "ASV_taxonomy.csv"), row.names = FALSE)
+
+# 3. Séquences des ASV au format FASTA (pour BLAST ou un arbre phylogénétique)
+writeLines(paste0(">", asv_ids, "\n", asv_seqs), file.path(out_dir, "ASV_sequences.fasta"))
+
+# 4. Paramètres utilisés (toujours documenter ses choix, comme un cahier de labo)
+writeLines(c(paste("Date:", Sys.time()),
+             paste("dada2 version:", packageVersion("dada2")),
+             paste("trimLeft (primers 341F/805R):", paste(trim_left, collapse = ",")),
+             paste("truncLen:", trunc_forward, trunc_reverse),
+             paste("maxEE:", paste(max_expected_errors, collapse = ",")),
+             "maxN: 0, truncQ: 2, rm.phix: TRUE",
+             "pool: pseudo, ASV length kept: 400-432, chimera method: consensus",
+             "Taxonomy: SILVA nr99 v138.1, minBoot 50, addSpecies exact match",
+             "Input: 5,000 read pairs per sample, randomly subsampled by the trainer (seed 123)"),
+           file.path(out_dir, "parameters_used.txt"))
+
+list.files(out_dir)
+```
+
+# Résumé de la partie 1
+
+```{r summary, echo = FALSE}
+data.frame(
+  Item = c("Samples", "Reads at start (total)", "Reads at the end (total)",
+           "ASVs", "Median reads per sample at the end"),
+  Value = c(nrow(track), sum(track$Input), sum(track$Non_chimeric),
+            ncol(seqtab_nochim), median(track$Non_chimeric))
+)
+```
+
+Nous avons transformé des **fichiers FASTQ** en une **table d'ASV** avec une **taxonomie** :
+
+```
+FASTQ -> amorces retirées -> lectures filtrées -> lectures débruitées -> lectures fusionnées -> sans chimères -> taxonomie
+```
+
+Fichiers pour la partie 2 (dans `outputs/01_upstream/`) : `seqtab_nochim.rds`, `taxonomy.rds`,
+`ASV_counts.csv`, `ASV_taxonomy.csv`, `ASV_sequences.fasta`, `read_tracking.csv`.
+
+**Suite :** ouvrez `02_downstream_analysis.Rmd`.
+
+# Versions des logiciels
+
+```{r session}
+sessionInfo()
+```

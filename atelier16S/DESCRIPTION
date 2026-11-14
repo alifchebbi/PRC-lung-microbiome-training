@@ -1,0 +1,37 @@
+Package: atelier16S
+Type: Package
+Title: Install Everything for the 16S Microbiome Workshop (PRC Lung Cancer, ISBST)
+Version: 1.0.0
+Authors@R: person("Alif", "Chebbi", email = "alif.chebbi@isbst.uma.tn",
+    role = c("aut", "cre"), comment = c(ORCID = "0000-0002-2770-1013"))
+Description: Installing this package installs all the R and Bioconductor packages
+    used in the 16S rRNA microbiome workshop of the PRC "Microbiote et cancer du
+    poumon" (ISBST, Universite de la Manouba, 13 November 2026): DADA2, phyloseq,
+    DESeq2, vegan and their companions. It also provides a function that checks the
+    installation and a function that downloads the workshop materials.
+License: MIT + file LICENSE
+URL: https://github.com/alifchebbi/PRC-lung-microbiome-training
+BugReports: https://github.com/alifchebbi/PRC-lung-microbiome-training/issues
+Depends: R (>= 4.4.0)
+Imports:
+    dada2,
+    phyloseq,
+    DESeq2,
+    Biostrings,
+    ShortRead,
+    decontam,
+    microbiome,
+    vegan,
+    ggplot2,
+    dplyr,
+    tidyr,
+    readr,
+    patchwork,
+    here,
+    ape,
+    scales,
+    rmarkdown,
+    knitr,
+    BiocManager
+biocViews: Microbiome, Sequencing, Metagenomics
+Encoding: UTF-8

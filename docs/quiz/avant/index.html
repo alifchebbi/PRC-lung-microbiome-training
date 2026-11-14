@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiz avant l'atelier - Atelier microbiome 16S (ISBST, 13-11-2026)</title>
+<style>
+  :root { --ink:#000; --muted:#404040; --card:#F2F3F5; --line:#D9D9D9; --ok:#81D41A; --okbg:#E8F6D3; --no:#FFA6A6; --nobg:#FDE6E6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fff; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+  header { text-align:center; padding: 6px 0 10px; }
+  .pill { display:inline-block; background:#D9D9D9; border-radius:999px; padding:4px 12px; font-size:12px; font-weight:bold; letter-spacing:.04em; }
+  h1 { font-size: 22px; margin: 10px 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin:0; }
+  .bar { height: 8px; background: var(--card); border-radius: 99px; overflow:hidden; margin: 16px 0 6px; }
+  .bar > div { height:100%; width:0; background:#404040; transition: width .3s; }
+  .count { font-size: 13px; color: var(--muted); text-align:right; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; margin-top: 10px; box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+  .q { font-size: 19px; font-weight: bold; line-height: 1.35; margin: 0 0 14px; }
+  .opt { display:block; width:100%; text-align:left; font: inherit; font-size: 17px; line-height:1.3; padding: 14px 14px; margin: 8px 0;
+         border: 2px solid var(--line); border-radius: 12px; background:#fff; color: var(--ink); cursor:pointer; }
+  .opt b { display:inline-block; width: 1.6em; }
+  .opt:disabled { cursor: default; }
+  .opt.good { border-color: var(--ok); background: var(--okbg); font-weight:bold; }
+  .opt.bad { border-color: var(--no); background: var(--nobg); }
+  .expl { margin-top: 12px; font-size: 16px; line-height: 1.45; display:none; }
+  .expl.show { display:block; }
+  .verdict { font-weight:bold; }
+  .btn { display:block; width:100%; font: inherit; font-size: 17px; font-weight:bold; padding: 14px; margin-top: 14px;
+         background:#000; color:#fff; border:0; border-radius: 12px; cursor:pointer; }
+  .btn.light { background: #E5E5E5; color:#000; }
+  .score { font-size: 48px; font-weight:bold; text-align:center; margin: 8px 0 0; }
+  .msg { text-align:center; font-size: 17px; margin: 6px 0 14px; }
+  .rev { font-size: 15px; border-top: 1px solid var(--line); padding: 10px 0; }
+  .rev .ok { color:#2E7D5B; font-weight:bold; } .rev .ko { color:#C0392B; font-weight:bold; }
+  footer { margin-top: 24px; font-size: 12px; color: var(--muted); text-align:center; line-height:1.5; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="pill">ATELIER MICROBIOME 16S</span>
+    <h1>Quiz avant l'atelier</h1>
+    <p class="sub">10 questions simples · 4 réponses possibles · répondez sans chercher</p>
+  </header>
+  <div class="bar"><div id="bar"></div></div>
+  <div class="count" id="count"></div>
+  <main id="app"></main>
+  <footer>
+    PRC « Microbiote et cancer du poumon » · ISBST, Université de la Manouba · 13-11-2026<br>
+    Dr. Alif Chebbi · <a href="https://github.com/alifchebbi/PRC-lung-microbiome-training">matériel de l'atelier</a> · <a href="../apres/">quiz après l'atelier</a>
+  </footer>
+</div>
+<script>
+const QUESTIONS = [
+  { q: "Le microbiote, c'est...",
+    o: ["L'ensemble des microbes qui vivent dans un milieu (par exemple l'intestin)", "Un organe du corps humain", "Un antibiotique", "Une maladie"], a: 0,
+    e: "Le microbiote, ce sont tous les microbes (bactéries, champignons, virus) qui vivent ensemble dans un endroit : l'intestin, la bouche, les poumons..." },
+  { q: "Où trouve-t-on le plus de bactéries dans le corps humain ?",
+    o: ["Dans le cœur", "Dans le cerveau", "Dans les os", "Dans l'intestin"], a: 3,
+    e: "L'intestin, surtout le côlon, abrite de loin le plus de bactéries du corps." },
+  { q: "Pour savoir quelles bactéries sont dans un échantillon, sans les cultiver, on lit...",
+    o: ["Leur couleur", "Leur ADN", "Leur taille", "Leur odeur"], a: 1,
+    e: "Beaucoup de bactéries ne poussent pas au laboratoire. On lit donc directement leur ADN." },
+  { q: "Combien de lettres différentes y a-t-il dans l'ADN ?",
+    o: ["2", "20", "4 : A, C, G et T", "26"], a: 2,
+    e: "L'ADN s'écrit avec 4 lettres : A, C, G et T. Toute l'information est dans leur ordre." },
+  { q: "Un séquenceur sert à...",
+    o: ["Lire l'ordre des lettres de l'ADN", "Compter les globules rouges", "Mesurer la tension", "Tuer les bactéries"], a: 0,
+    e: "Le séquenceur lit des millions de petits morceaux d'ADN et donne l'ordre de leurs lettres." },
+  { q: "Le gène 16S sert surtout de...",
+    o: ["Médicament", "Code-barres pour reconnaître les bactéries", "Vaccin", "Colorant"], a: 1,
+    e: "Toutes les bactéries ont ce gène, mais il change un peu d'une bactérie à l'autre : c'est un code-barres." },
+  { q: "Un fichier FASTQ contient...",
+    o: ["Des photos de bactéries", "Des résultats de prise de sang", "Le rapport final de l'étude", "Les séquences d'ADN lues par le séquenceur"], a: 3,
+    e: "C'est le fichier qui sort du séquenceur : les lettres lues et leur qualité. C'est notre point de départ dans R." },
+  { q: "R, c'est...",
+    o: ["Un logiciel gratuit pour analyser des données", "Un séquenceur", "Une bactérie", "Un type d'échantillon"], a: 0,
+    e: "R est un logiciel gratuit pour les statistiques et les graphiques. Nous l'utilisons avec RStudio." },
+  { q: "La « diversité » d'un microbiote, c'est...",
+    o: ["Le poids des bactéries", "La couleur de l'échantillon", "Le nombre de sortes de bactéries et leurs proportions", "L'âge du patient"], a: 2,
+    e: "Comme un jardin : combien d'espèces de plantes, et est-ce qu'une espèce prend toute la place ?" },
+  { q: "Pourquoi comparer des patients à des personnes sans la maladie (témoins) ?",
+    o: ["Parce que le séquenceur l'exige", "Pour voir ce qui est différent chez les malades", "Pour avoir des données à jeter", "Pour choisir un antibiotique"], a: 1,
+    e: "Sans groupe témoin, impossible de dire si ce que l'on voit chez les patients est inhabituel." }
+];
+
+const app = document.getElementById("app");
+const bar = document.getElementById("bar");
+const count = document.getElementById("count");
+const LETTERS = ["A", "B", "C", "D"];
+const MODE = "avant";
+const KEY = "quiz16s_avant_v2";
+let i = 0, answers = [];
+
+function save() { try { localStorage.setItem(KEY, JSON.stringify({ i, answers })); } catch (e) {} }
+function load() { try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s && Array.isArray(s.answers)) { i = s.i; answers = s.answers; } } catch (e) {} }
+
+function progress() {
+  const done = answers.filter(x => x !== undefined && x !== null).length;
+  bar.style.width = (100 * done / QUESTIONS.length) + "%";
+  count.textContent = i < QUESTIONS.length ? `Question ${i + 1} / ${QUESTIONS.length}` : `Terminé`;
+}
+
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+
+function showQuestion() {
+  progress();
+  const Q = QUESTIONS[i];
+  app.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("p", "q", Q.q));
+  const btns = Q.o.map((txt, k) => {
+    const b = el("button", "opt");
+    const l = el("b", null, LETTERS[k]); b.appendChild(l); b.appendChild(document.createTextNode(txt));
+    b.onclick = () => choose(k, btns, expl, next);
+    card.appendChild(b); return b;
+  });
+  const expl = el("div", "expl");
+  card.appendChild(expl);
+  const next = el("button", "btn", i < QUESTIONS.length - 1 ? "Question suivante" : "Voir mon score");
+  next.style.display = "none";
+  next.onclick = () => { i++; save(); i < QUESTIONS.length ? showQuestion() : showScore(); window.scrollTo(0, 0); };
+  card.appendChild(next);
+  app.appendChild(card);
+  if (answers[i] !== undefined && answers[i] !== null) { if (MODE === "avant") { btns.forEach(b => b.disabled = true); next.style.display = "block"; } else reveal(answers[i], btns, expl, next); }
+}
+
+function choose(k, btns, expl, next) {
+  answers[i] = k; save(); progress();
+  if (MODE === "avant") { btns.forEach((b, j) => { b.disabled = true; if (j === k) b.style.borderColor = "#404040"; if (j === k) b.style.fontWeight = "bold"; }); next.style.display = "block"; return; }
+  reveal(k, btns, expl, next);
+}
+
+function reveal(k, btns, expl, next) {
+  const Q = QUESTIONS[i];
+  btns.forEach((b, j) => { b.disabled = true; if (j === Q.a) b.classList.add("good"); else if (j === k) b.classList.add("bad"); });
+  expl.innerHTML = "";
+  const v = el("span", "verdict", k === Q.a ? "Bonne réponse ! " : `Pas tout à fait : la bonne réponse est ${LETTERS[Q.a]}. `);
+  expl.appendChild(v); expl.appendChild(document.createTextNode(Q.e));
+  expl.classList.add("show"); next.style.display = "block";
+}
+
+function showScore() {
+  progress();
+  const good = QUESTIONS.reduce((s, Q, j) => s + (answers[j] === Q.a ? 1 : 0), 0);
+  app.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("p", "score", `${good} / ${QUESTIONS.length}`));
+  const n = QUESTIONS.length;
+  const msg = MODE === "avant"
+    ? "Notez ce score ! Vous referez un quiz après l'atelier pour mesurer vos progrès."
+    : (good >= 0.85 * n ? "Excellent : vous êtes prêt(e) pour vos propres données !" :
+       good >= 0.6 * n ? "Bien joué : relisez les explications des questions manquées." :
+       "Bon début : revoyez les diapositives et le rapport HTML de 2_Corrige, puis recommencez.");
+  card.appendChild(el("p", "msg", msg));
+  QUESTIONS.forEach((Q, j) => {
+    const r = el("div", "rev");
+    const ok = answers[j] === Q.a;
+    r.appendChild(el("span", ok ? "ok" : "ko", ok ? "Juste · " : "À revoir · "));
+    r.appendChild(document.createTextNode(`${j + 1}. ${Q.q} Réponse : ${LETTERS[Q.a]}. ${Q.o[Q.a]}` + (MODE === "avant" ? ` · ${Q.e}` : "")));
+    card.appendChild(r);
+  });
+  const again = el("button", "btn light", "Recommencer le quiz");
+  again.onclick = () => { i = 0; answers = []; save(); showQuestion(); window.scrollTo(0, 0); };
+  card.appendChild(again);
+  app.appendChild(card);
+}
+
+load();
+if (i >= QUESTIONS.length) showScore(); else showQuestion();
+</script>
+</body>
+</html>

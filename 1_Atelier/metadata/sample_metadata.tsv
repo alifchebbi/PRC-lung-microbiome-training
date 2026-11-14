@@ -1,0 +1,11 @@
+sample_id	run_accession	sample_accession	group	subject_id	sample_type	study_site	original_title	original_read_count	screening_separation_score
+HC01	SRR10376841	SAMN13166197	Control	C05	bronchial biopsy	Zaragoza, Spain	Bronchial sample from control 5	28881	0.387
+HC02	SRR10376818	SAMN13166215	Control	C14	bronchial biopsy	Zaragoza, Spain	Bronchial sample from control 14	24717	0.349
+HC03	SRR10376887	SAMN13166189	Control	C01	bronchial biopsy	Zaragoza, Spain	Bronchial sample from control 1	21309	0.285
+HC04	SRR10376875	SAMN13166199	Control	C06	bronchial biopsy	Zaragoza, Spain	Bronchial sample from control 6	24146	0.277
+HC05	SRR10376827	SAMN13166207	Control	C10	bronchial biopsy	Zaragoza, Spain	Bronchial sample from control 10	18977	0.261
+TU01	SRR10376788	SAMN13166242	Cancer	P02	bronchial biopsy	Zaragoza, Spain	Affected bronchial sample from patient 2	21291	0.391
+TU02	SRR10376871	SAMN13166301	Cancer	P17	bronchial biopsy	Zaragoza, Spain	Affected bronchial sample from patient 17	108828	0.372
+TU03	SRR10376850	SAMN13166269	Cancer	P09	bronchial biopsy	Zaragoza, Spain	Affected bronchial sample from patient 9	72997	0.352
+TU04	SRR10376880	SAMN13166293	Cancer	P15	bronchial biopsy	Zaragoza, Spain	Affected bronchial sample from patient 15	44570	0.342
+TU05	SRR10376792	SAMN13166238	Cancer	P01	bronchial biopsy	Zaragoza, Spain	Affected bronchial sample from patient 1	14000	0.338

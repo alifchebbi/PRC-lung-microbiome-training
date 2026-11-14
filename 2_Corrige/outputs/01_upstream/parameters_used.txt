@@ -1,0 +1,9 @@
+Date: 2026-11-09 16:26:14.278172
+dada2 version: 1.38.0
+trimLeft (primers 341F/805R): 17,21
+truncLen: 280 220
+maxEE: 2,2
+maxN: 0, truncQ: 2, rm.phix: TRUE
+pool: pseudo, ASV length kept: 400-432, chimera method: consensus
+Taxonomy: SILVA nr99 v138.1, minBoot 50, addSpecies exact match
+Input: 5,000 read pairs per sample, randomly subsampled by the trainer (seed 123)

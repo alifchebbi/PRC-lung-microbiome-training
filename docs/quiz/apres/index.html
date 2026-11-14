@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiz après l'atelier - Atelier microbiome 16S (ISBST, 13-11-2026)</title>
+<style>
+  :root { --ink:#000; --muted:#404040; --card:#F2F3F5; --line:#D9D9D9; --ok:#81D41A; --okbg:#E8F6D3; --no:#FFA6A6; --nobg:#FDE6E6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Arial, Helvetica, sans-serif; color:var(--ink); background:#fff; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+  header { text-align:center; padding: 6px 0 10px; }
+  .pill { display:inline-block; background:#D9D9D9; border-radius:999px; padding:4px 12px; font-size:12px; font-weight:bold; letter-spacing:.04em; }
+  h1 { font-size: 22px; margin: 10px 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin:0; }
+  .bar { height: 8px; background: var(--card); border-radius: 99px; overflow:hidden; margin: 16px 0 6px; }
+  .bar > div { height:100%; width:0; background:#404040; transition: width .3s; }
+  .count { font-size: 13px; color: var(--muted); text-align:right; }
+  .card { background: var(--card); border-radius: 14px; padding: 18px; margin-top: 10px; box-shadow: 0 2px 6px rgba(0,0,0,.12); }
+  .q { font-size: 19px; font-weight: bold; line-height: 1.35; margin: 0 0 14px; }
+  .opt { display:block; width:100%; text-align:left; font: inherit; font-size: 17px; line-height:1.3; padding: 14px 14px; margin: 8px 0;
+         border: 2px solid var(--line); border-radius: 12px; background:#fff; color: var(--ink); cursor:pointer; }
+  .opt b { display:inline-block; width: 1.6em; }
+  .opt:disabled { cursor: default; }
+  .opt.good { border-color: var(--ok); background: var(--okbg); font-weight:bold; }
+  .opt.bad { border-color: var(--no); background: var(--nobg); }
+  .expl { margin-top: 12px; font-size: 16px; line-height: 1.45; display:none; }
+  .expl.show { display:block; }
+  .verdict { font-weight:bold; }
+  .btn { display:block; width:100%; font: inherit; font-size: 17px; font-weight:bold; padding: 14px; margin-top: 14px;
+         background:#000; color:#fff; border:0; border-radius: 12px; cursor:pointer; }
+  .btn.light { background: #E5E5E5; color:#000; }
+  .score { font-size: 48px; font-weight:bold; text-align:center; margin: 8px 0 0; }
+  .msg { text-align:center; font-size: 17px; margin: 6px 0 14px; }
+  .rev { font-size: 15px; border-top: 1px solid var(--line); padding: 10px 0; }
+  .rev .ok { color:#2E7D5B; font-weight:bold; } .rev .ko { color:#C0392B; font-weight:bold; }
+  footer { margin-top: 24px; font-size: 12px; color: var(--muted); text-align:center; line-height:1.5; }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="pill">ATELIER MICROBIOME 16S</span>
+    <h1>Quiz après l'atelier</h1>
+    <p class="sub">20 questions · 4 réponses possibles · une explication après chaque réponse</p>
+  </header>
+  <div class="bar"><div id="bar"></div></div>
+  <div class="count" id="count"></div>
+  <main id="app"></main>
+  <footer>
+    PRC « Microbiote et cancer du poumon » · ISBST, Université de la Manouba · 13-11-2026<br>
+    Dr. Alif Chebbi · <a href="https://github.com/alifchebbi/PRC-lung-microbiome-training">matériel de l'atelier</a> · <a href="../avant/">quiz avant l'atelier</a>
+  </footer>
+</div>
+<script>
+const QUESTIONS = [
+  { q: "Pourquoi utilise-t-on le gène de l'ARNr 16S pour identifier les bactéries ?",
+    o: ["Il possède des régions conservées (pour les amorces) et des régions variables (pour l'identification)",
+        "C'est le plus long gène du génome bactérien",
+        "Il code une protéine de virulence",
+        "Il n'existe que chez les bactéries pathogènes"], a: 0,
+    e: "Les régions conservées sont comme le nom de famille : les amorces s'y fixent chez toutes les bactéries. Les régions variables sont comme le prénom : elles changent d'une bactérie à l'autre." },
+  { q: "Quelle région du gène 16S a été séquencée dans notre jeu de données ?",
+    o: ["V4 seulement", "V3-V4", "Le gène complet V1-V9", "La région ITS"], a: 1,
+    e: "Amorces 341F / 805R : la région V3-V4, environ 427 bases sans les amorces, lue en MiSeq 2 x 300." },
+  { q: "Avec la technologie Illumina, comment chaque base est-elle reconnue ?",
+    o: ["Par la variation du courant électrique dans un pore", "Par la variation du pH", "Par la couleur d'une base fluorescente, photographiée à chaque cycle", "Par la masse de la molécule"], a: 2,
+    e: "Illumina fait du séquençage par synthèse : une base colorée est ajoutée à chaque cycle et une caméra photographie la couleur. Le courant électrique, c'est Nanopore." },
+  { q: "Quelle technologie peut lire le gène 16S entier (~1 500 bases) en une seule lecture ?",
+    o: ["Illumina MiSeq 2 x 300", "Nanopore (MinION)", "La qPCR", "L'électrophorèse sur gel"], a: 1,
+    e: "Nanopore (et aussi PacBio) produit des lectures longues : le 16S complet, ce qui donne souvent une identification jusqu'à l'espèce." },
+  { q: "Dans un échantillon, DADA2 trouve « Tunis » 980 fois et « Tumis » 15 fois. Que fait-il de « Tumis » ?",
+    o: ["Il le garde comme une nouvelle ville", "Il supprime tout l'échantillon", "Il le fusionne avec « Sousse »", "Il le considère comme une faute de frappe de « Tunis » et le corrige"], a: 3,
+    e: "« Tumis » est rare et ne diffère que d'une lettre d'un mot très fréquent : selon le modèle d'erreurs appris (learnErrors), c'est une faute. C'est le débruitage." },
+  { q: "Quelle est la différence entre un ASV et un OTU ?",
+    o: ["Un ASV est une séquence exacte après correction des erreurs ; un OTU regroupe les séquences à 97 % d'identité",
+        "Un OTU est une séquence exacte ; un ASV regroupe à 97 %",
+        "Il n'y a aucune différence",
+        "Un ASV est un phylum, un OTU est une espèce"], a: 0,
+    e: "OTU = on regroupe les mots qui se ressemblent. ASV = on corrige les fautes pour retrouver le mot exact. Les ASV sont comparables d'une étude à l'autre." },
+  { q: "Un zOTU (UNOISE3, USEARCH), c'est...",
+    o: ["Un OTU à 97 % d'identité", "Un équivalent des ASV : une séquence débruitée exacte", "Une base de données de taxonomie", "Un type de séquenceur"], a: 1,
+    e: "ASV (DADA2), ESV, zOTU (UNOISE3) et sOTU (Deblur) : des noms différents pour la même idée, la séquence exacte corrigée." },
+  { q: "Pourquoi raréfie-t-on les échantillons avant la diversité alpha ?",
+    o: ["Pour augmenter le nombre de lectures", "Pour retirer les chimères", "Pour comparer des échantillons séquencés à des profondeurs différentes", "Pour corriger la taxonomie"], a: 2,
+    e: "Plus on lit de séquences, plus on trouve d'espèces. On tire donc le même nombre de lectures dans chaque échantillon (347 dans l'atelier)." },
+  { q: "Jardin A : 25-25-25-25 plantes. Jardin B : 85-5-5-5 (mêmes 4 espèces). Quel indice est identique pour A et B ?",
+    o: ["Shannon", "Simpson", "Pielou", "Observed (la richesse)"], a: 3,
+    e: "Les deux jardins ont 4 espèces : Observed = 4 et 4. Shannon (1,39 contre 0,59), Simpson et Pielou baissent car une espèce domine dans B." },
+  { q: "L'indice de Shannon mesure...",
+    o: ["La richesse et l'équilibre entre les espèces", "Seulement le nombre d'espèces", "La distance entre deux échantillons", "La profondeur de séquençage"], a: 0,
+    e: "Une classe où tout le monde parle est plus « diverse » qu'une classe où un seul élève parle, même avec le même nombre d'élèves." },
+  { q: "Diversité alpha, bêta, gamma : la diversité bêta, c'est...",
+    o: ["La diversité dans un seul échantillon", "La différence entre deux échantillons", "Le nombre total d'espèces de toute l'étude", "La qualité des lectures"], a: 1,
+    e: "Alpha = dans une boîte à goûter. Bêta = entre deux boîtes. Gamma = toutes les sortes de fruits de toutes les boîtes." },
+  { q: "La distance de Jaccard tient compte...",
+    o: ["Des abondances de chaque bactérie", "De l'arbre phylogénétique", "Seulement de la présence ou de l'absence des bactéries", "Des rapports CLR"], a: 2,
+    e: "Jaccard compare deux listes de courses sans regarder les quantités. Bray-Curtis compte les fruits de chaque panier." },
+  { q: "Boîte d'Amira : 5 pommes, 3 bananes, 2 dattes. Boîte de Sami : 1 pomme, 1 banane, 8 oranges. Bray-Curtis = 0,8. Cela veut dire...",
+    o: ["Les boîtes sont identiques", "Les boîtes sont très différentes", "Les boîtes partagent 80 % de leurs fruits", "Le calcul est impossible"], a: 1,
+    e: "0 = identiques, 1 = rien en commun. Seulement 2 fruits sur 20 sont vraiment partagés : distance 0,8, très différentes." },
+  { q: "Quelle distance bêta utilise l'arbre phylogénétique des bactéries ?",
+    o: ["Jaccard", "Bray-Curtis", "La distance euclidienne", "UniFrac"], a: 3,
+    e: "UniFrac (pondéré ou non) considère que deux bactéries « cousines » se ressemblent plus, comme une pomme et une poire." },
+  { q: "PERMANOVA : R² = 0,66 et p = 0,01. Que signifie R² ?",
+    o: ["Le groupe (patient ou témoin) explique 66 % des différences entre échantillons", "66 % des bactéries sont pathogènes", "La p-value vaut 0,66", "66 % des lectures ont été perdues"], a: 0,
+    e: "R² est la taille de l'effet. 0,66 est énorme en microbiome : ici, il vient surtout de la sélection des échantillons." },
+  { q: "Pourquoi séquencer des témoins négatifs (blancs d'extraction et de PCR) ?",
+    o: ["Pour augmenter la diversité", "Pour repérer les contaminants des réactifs (le « kitome »)", "Pour remplacer les métadonnées", "Pour calibrer les couleurs du séquenceur"], a: 1,
+    e: "Avec les blancs, un outil comme decontam peut retirer les bactéries qui viennent des kits et des réactifs." },
+  { q: "Les biopsies des témoins ont peu de lectures et beaucoup de Pseudomonas. Quelle interprétation est la plus prudente ?",
+    o: ["Pseudomonas protège du cancer du poumon", "DADA2 s'est trompé", "C'est une possible contamination par les réactifs, liée à la faible biomasse", "Les témoins sont malades"], a: 2,
+    e: "Une pincée de sel est invisible dans une marmite mais forte dans une tasse : avec peu d'ADN bactérien, les contaminants prennent beaucoup de place." },
+  { q: "DESeq2 trouve 55 genres significatifs sur 75. Que faut-il en penser ?",
+    o: ["C'est un signal d'alerte : vérifier la sélection des échantillons et les contaminants", "C'est une grande découverte à publier", "Cela prouve que ces bactéries causent le cancer", "Il faut tester encore plus de genres"], a: 0,
+    e: "Un signal trop beau doit être cassé avant d'être cru : 10 échantillons choisis pour différer, faible biomasse, kitome." },
+  { q: "Le séquençage 16S permet de savoir...",
+    o: ["Ce que font les bactéries (leurs fonctions)", "La quantité absolue de bactéries", "Les gènes de résistance aux antibiotiques", "Qui est là, le plus souvent au niveau du genre"], a: 3,
+    e: "Le 16S dit qui est là (des proportions, pas des quantités absolues). Pour la fonction : shotgun, métatranscriptomique. Pour l'absolu : qPCR ou culture." },
+  { q: "Dans RStudio, après avoir ouvert le projet, getwd() doit se terminer par...",
+    o: ["1_Atelier", "2_Corrige", "Desktop", "scripts"], a: 0,
+    e: "On travaille dans 1_Atelier (ouvert avec Atelier_16S_cancer_poumon.Rproj) et on compare ensuite avec 2_Corrige." }
+];
+
+const app = document.getElementById("app");
+const bar = document.getElementById("bar");
+const count = document.getElementById("count");
+const LETTERS = ["A", "B", "C", "D"];
+const MODE = "apres";
+const KEY = "quiz16s_apres";
+let i = 0, answers = [];
+
+function save() { try { localStorage.setItem(KEY, JSON.stringify({ i, answers })); } catch (e) {} }
+function load() { try { const s = JSON.parse(localStorage.getItem(KEY) || "null"); if (s && Array.isArray(s.answers)) { i = s.i; answers = s.answers; } } catch (e) {} }
+
+function progress() {
+  const done = answers.filter(x => x !== undefined && x !== null).length;
+  bar.style.width = (100 * done / QUESTIONS.length) + "%";
+  count.textContent = i < QUESTIONS.length ? `Question ${i + 1} / ${QUESTIONS.length}` : `Terminé`;
+}
+
+function el(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; }
+
+function showQuestion() {
+  progress();
+  const Q = QUESTIONS[i];
+  app.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("p", "q", Q.q));
+  const btns = Q.o.map((txt, k) => {
+    const b = el("button", "opt");
+    const l = el("b", null, LETTERS[k]); b.appendChild(l); b.appendChild(document.createTextNode(txt));
+    b.onclick = () => choose(k, btns, expl, next);
+    card.appendChild(b); return b;
+  });
+  const expl = el("div", "expl");
+  card.appendChild(expl);
+  const next = el("button", "btn", i < QUESTIONS.length - 1 ? "Question suivante" : "Voir mon score");
+  next.style.display = "none";
+  next.onclick = () => { i++; save(); i < QUESTIONS.length ? showQuestion() : showScore(); window.scrollTo(0, 0); };
+  card.appendChild(next);
+  app.appendChild(card);
+  if (answers[i] !== undefined && answers[i] !== null) { if (MODE === "avant") { btns.forEach(b => b.disabled = true); next.style.display = "block"; } else reveal(answers[i], btns, expl, next); }
+}
+
+function choose(k, btns, expl, next) {
+  answers[i] = k; save(); progress();
+  if (MODE === "avant") { btns.forEach((b, j) => { b.disabled = true; if (j === k) b.style.borderColor = "#404040"; if (j === k) b.style.fontWeight = "bold"; }); next.style.display = "block"; return; }
+  reveal(k, btns, expl, next);
+}
+
+function reveal(k, btns, expl, next) {
+  const Q = QUESTIONS[i];
+  btns.forEach((b, j) => { b.disabled = true; if (j === Q.a) b.classList.add("good"); else if (j === k) b.classList.add("bad"); });
+  expl.innerHTML = "";
+  const v = el("span", "verdict", k === Q.a ? "Bonne réponse ! " : `Pas tout à fait : la bonne réponse est ${LETTERS[Q.a]}. `);
+  expl.appendChild(v); expl.appendChild(document.createTextNode(Q.e));
+  expl.classList.add("show"); next.style.display = "block";
+}
+
+function showScore() {
+  progress();
+  const good = QUESTIONS.reduce((s, Q, j) => s + (answers[j] === Q.a ? 1 : 0), 0);
+  app.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("p", "score", `${good} / ${QUESTIONS.length}`));
+  const n = QUESTIONS.length;
+  const msg = MODE === "avant"
+    ? "Notez ce score ! Vous referez un quiz après l'atelier pour mesurer vos progrès."
+    : (good >= 0.85 * n ? "Excellent : vous êtes prêt(e) pour vos propres données !" :
+       good >= 0.6 * n ? "Bien joué : relisez les explications des questions manquées." :
+       "Bon début : revoyez les diapositives et le rapport HTML de 2_Corrige, puis recommencez.");
+  card.appendChild(el("p", "msg", msg));
+  QUESTIONS.forEach((Q, j) => {
+    const r = el("div", "rev");
+    const ok = answers[j] === Q.a;
+    r.appendChild(el("span", ok ? "ok" : "ko", ok ? "Juste · " : "À revoir · "));
+    r.appendChild(document.createTextNode(`${j + 1}. ${Q.q} Réponse : ${LETTERS[Q.a]}. ${Q.o[Q.a]}` + (MODE === "avant" ? ` · ${Q.e}` : "")));
+    card.appendChild(r);
+  });
+  const again = el("button", "btn light", "Recommencer le quiz");
+  again.onclick = () => { i = 0; answers = []; save(); showQuestion(); window.scrollTo(0, 0); };
+  card.appendChild(again);
+  app.appendChild(card);
+}
+
+load();
+if (i >= QUESTIONS.length) showScore(); else showQuestion();
+</script>
+</body>
+</html>

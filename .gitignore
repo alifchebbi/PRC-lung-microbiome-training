@@ -1,0 +1,9 @@
+packages/
+*.zip
+.Rproj.user/
+.Rhistory
+.RData
+.DS_Store
+*/data/filtered_fastq/*.fastq.gz
+*/data/reference_db/*.fa.gz
+*/logs/*.log

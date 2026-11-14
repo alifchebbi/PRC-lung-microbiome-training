@@ -1,0 +1,730 @@
+---
+title: "Partie 2 - Analyse en aval : diversité, statistiques et interprétation"
+subtitle: "16S rRNA V3-V4 - biopsies bronchiques : cancer du poumon vs témoins sans cancer (NCBI PRJNA586753)"
+author: "ISBST - Atelier microbiome"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+knit: (function(input, ...) rmarkdown::render(input, output_dir = file.path(dirname(input), "..", "reports")))
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include = FALSE}
+# Bloc caché : on travaille depuis le dossier du projet et on masque les messages techniques.
+knitr::opts_knit$set(root.dir = here::here())
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 9, fig.height = 5, dpi = 120)
+```
+
+# Avant de commencer
+
+> Les résultats attendus de cette partie sont dans le dossier **`2_Corrige/`** (tableaux dans
+> `outputs/02_downstream/`, figures dans `figures/02_downstream/`, rapport HTML dans `reports/`).
+> Essayez d'abord vous-même, puis comparez.
+
+Dans la **partie 1**, nous avons transformé les fichiers FASTQ en une **table d'ASV** (combien
+de lectures de chaque ASV dans chaque échantillon) et une **table de taxonomie** (le nom de
+chaque ASV).
+
+Dans la **partie 2**, nous répondons à la question biologique :
+
+> **La communauté bactérienne des bronches de patients atteints de cancer du poumon est-elle
+> différente de celle de personnes sans cancer ?**
+
+Nous la regardons de quatre façons :
+
+| Question | Méthode |
+|---|---|
+| Quelles bactéries sont présentes ? | Graphiques de composition (abondance relative) |
+| Combien de bactéries différentes dans chaque échantillon ? | **Diversité alpha** (richesse, Shannon, Simpson) |
+| Les communautés cancer et témoin sont-elles différentes dans l'ensemble ? | **Diversité bêta** (Bray-Curtis, PCoA, PERMANOVA) |
+| Quelles bactéries diffèrent ? | **Abondance différentielle** (DESeq2) |
+
+> **Rappel du plan d'étude :** 5 patients atteints de cancer et 5 témoins sans cancer, soit
+> **10 personnes différentes**. Les deux groupes sont **indépendants** : on utilise donc des
+> tests **non appariés**, comme comparer les notes de deux classes différentes.
+>
+> **Rappel du choix pédagogique :** ces 10 biopsies ont été choisies parmi 41 parce qu'elles
+> montrent une différence nette. Les tests vont donc probablement être "significatifs" :
+> c'est fait exprès pour apprendre à lire les résultats, mais cela **ne prouve rien** sur le
+> cancer du poumon (voir l'étape 8).
+
+# Étape 1 - Charger les packages et les données
+
+```{r packages}
+library(here)
+library(phyloseq)    # le "classeur" des données de microbiome
+library(vegan)       # statistiques d'écologie (diversité, PERMANOVA)
+library(DESeq2)      # abondance différentielle
+library(ggplot2)     # figures
+library(patchwork)   # mettre plusieurs figures côte à côte
+library(dplyr)       # manipuler les tableaux
+
+fig_dir <- here("figures", "02_downstream")
+out_dir <- here("outputs", "02_downstream")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+set.seed(123)        # mêmes résultats "au hasard" à chaque fois (raréfaction, permutations)
+
+# Couleurs utilisées dans toutes les figures : bleu = témoin, rouge = cancer
+group_colours <- c(Control = "#2E86AB", Cancer = "#C0392B")
+
+# Une petite aide pour enregistrer chaque figure en PNG (300 dpi) et en PDF
+save_figure <- function(plot, name, width = 8, height = 5) {
+  ggsave(file.path(fig_dir, paste0(name, ".png")), plot, width = width, height = height, dpi = 300)
+  ggsave(file.path(fig_dir, paste0(name, ".pdf")), plot, width = width, height = height)
+}
+```
+
+```{r load-data}
+# Résultats de la partie 1
+seqtab <- readRDS(here("outputs", "01_upstream", "seqtab_nochim.rds"))   # échantillons x ASV
+taxa   <- readRDS(here("outputs", "01_upstream", "taxonomy.rds"))        # ASV x niveaux
+
+# Tableau des échantillons, avec l'identifiant en nom de ligne (phyloseq en a besoin)
+metadata <- read.delim(here("metadata", "sample_metadata.tsv"), stringsAsFactors = FALSE)
+rownames(metadata) <- metadata$sample_id
+metadata$group <- factor(metadata$group, levels = c("Control", "Cancer"))  # Control = référence
+
+# Contrôle : les mêmes échantillons dans la table d'ASV et dans les métadonnées ?
+data.frame(Samples_in_ASV_table = nrow(seqtab),
+           Samples_in_metadata  = nrow(metadata),
+           Same_names = setequal(rownames(seqtab), rownames(metadata)))
+```
+
+**Comment lire ce résultat :** `Same_names` doit être `TRUE`. Sinon, phyloseq supprimerait en
+silence les échantillons qui ne correspondent pas, comme un appel en classe où les élèves
+absents de la liste disparaissent sans que personne ne le remarque.
+
+# Étape 2 - Construire l'objet phyloseq
+
+Un **objet phyloseq** garde trois tableaux ensemble et toujours dans le même ordre. C'est
+comme le **dossier d'un patient** à l'hôpital, où trois feuilles sont agrafées ensemble :
+
+- `otu_table` : les comptages (lectures par ASV et par échantillon), les résultats d'analyse ;
+- `tax_table` : la taxonomie de chaque ASV, le nom des bactéries ;
+- `sample_data` : les métadonnées de chaque échantillon, la fiche d'identité.
+
+Ainsi, quand on retire un échantillon ou un ASV, les trois feuilles restent cohérentes.
+
+```{r phyloseq}
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows = FALSE),
+               tax_table(taxa),
+               sample_data(metadata))
+
+# Les noms des ASV sont de longues séquences d'ADN : on les garde de côté et on utilise
+# des noms courts à la place (comme un numéro de dossard au lieu du nom complet)
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- sprintf("ASV%03d", seq_along(dna))
+taxa_names(ps) <- names(dna)
+ps <- merge_phyloseq(ps, dna)
+
+ps
+```
+
+**Comment lire ce résultat :** phyloseq indique combien de taxons (ASV) et d'échantillons il
+contient, et quels tableaux sont à l'intérieur.
+
+# Étape 3 - Nettoyer : retirer ce qui n'est pas du microbiome bactérien
+
+Les amorces 16S amplifient parfois de l'ADN qui ne vient **pas** des bactéries :
+
+- Les **mitochondries** et les **chloroplastes** descendent d'anciennes bactéries, donc ils ont
+  un gène proche du 16S. Dans une biopsie, l'ADN mitochondrial des cellules humaines peut être amplifié.
+- Les séquences que SILVA ne classe même pas au niveau du Règne sont souvent des produits
+  **hors cible** (par exemple de l'ADN humain).
+
+C'est comme trier un panier de fruits : on enlève les feuilles et les cailloux avant de
+compter les fruits.
+
+```{r clean}
+ps_bact <- subset_taxa(ps,
+                       Kingdom == "Bacteria" &
+                       !is.na(Phylum) &
+                       (is.na(Order)  | Order  != "Chloroplast") &
+                       (is.na(Family) | Family != "Mitochondria"))
+
+data.frame(
+  Step  = c("Before cleaning", "After cleaning"),
+  ASVs  = c(ntaxa(ps), ntaxa(ps_bact)),
+  Reads = c(sum(sample_sums(ps)), sum(sample_sums(ps_bact)))
+)
+```
+
+```{r depth}
+# Lectures par échantillon après nettoyage
+depth <- data.frame(Sample = sample_names(ps_bact),
+                    Group  = sample_data(ps_bact)$group,
+                    Reads  = sample_sums(ps_bact))
+depth[order(depth$Reads), ]
+```
+
+**Comment lire ce résultat :** le nombre de lectures par échantillon (la **profondeur de
+séquençage**) n'est pas le même partout. C'est important : un échantillon avec plus de
+lectures montrera plus d'ASV rares juste parce qu'il a été plus séquencé. C'est comme deux
+pêcheurs : celui qui pêche 8 heures trouvera plus d'espèces de poissons que celui qui pêche
+1 heure, même dans la même mer. Il faut corriger cela (étapes 5 et 7).
+
+> **À propos des contaminants.** Une biopsie bronchique a une très faible biomasse
+> bactérienne, donc l'ADN contaminant des réactifs peut représenter une grande partie des
+> lectures. Le package `decontam` repère les contaminants en comparant les échantillons à
+> des **témoins négatifs** (eau et blancs de PCR sans ADN). Nous n'en avons pas dans ces
+> données : nous ne pouvons donc pas lancer decontam ici. **Dans un vrai projet, incluez et
+> analysez toujours des témoins négatifs.**
+
+# Étape 4 - Quelles bactéries sont présentes ? (composition)
+
+On ne peut pas comparer des comptages bruts entre échantillons de profondeurs différentes.
+Pour les graphiques, on utilise donc l'**abondance relative** : le pourcentage de lectures de
+chaque bactérie dans un échantillon. C'est comme comparer deux paniers du marché, un grand
+et un petit : on ne compare pas "5 tomates contre 20 tomates", mais "25 % de tomates contre
+25 % de tomates".
+
+```{r composition-phylum, fig.height = 5}
+# Additionner les ASV qui appartiennent au même phylum, puis convertir en pourcentages
+ps_phylum <- tax_glom(ps_bact, taxrank = "Phylum")
+ps_phylum_rel <- transform_sample_counts(ps_phylum, function(x) 100 * x / sum(x))
+
+df_phylum <- psmelt(ps_phylum_rel)     # psmelt() fait un long tableau, facile pour ggplot
+
+p_phylum <- ggplot(df_phylum, aes(x = Sample, y = Abundance, fill = Phylum)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ group, scales = "free_x") +
+  labs(title = "Phylum composition", y = "Relative abundance (%)", x = NULL) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+p_phylum
+save_figure(p_phylum, "composition_phylum", width = 10)
+```
+
+```{r composition-genus, fig.height = 6}
+# Niveau genre : on montre les 12 genres les plus abondants, les autres sont regroupés en "Other"
+ps_genus <- tax_glom(ps_bact, taxrank = "Genus", NArm = FALSE)
+ps_genus_rel <- transform_sample_counts(ps_genus, function(x) 100 * x / sum(x))
+df_genus <- psmelt(ps_genus_rel)
+df_genus$Genus[is.na(df_genus$Genus)] <- "Unclassified"
+
+top_genera <- df_genus %>% group_by(Genus) %>% summarise(mean = mean(Abundance)) %>%
+  arrange(desc(mean)) %>% filter(Genus != "Unclassified") %>% slice(1:12) %>% pull(Genus)
+df_genus$Genus_plot <- ifelse(df_genus$Genus %in% top_genera, df_genus$Genus, "Other")
+df_genus$Genus_plot <- factor(df_genus$Genus_plot, levels = c(top_genera, "Other"))
+
+p_genus <- ggplot(df_genus, aes(x = Sample, y = Abundance, fill = Genus_plot)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ group, scales = "free_x") +
+  scale_fill_manual(values = c(scales::hue_pal()(12), "grey80")) +
+  labs(title = "Top 12 genera", y = "Relative abundance (%)", x = NULL, fill = "Genus") +
+  theme_bw() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+p_genus
+save_figure(p_genus, "composition_genus", width = 11, height = 6)
+```
+
+**Comment lire ces graphiques :** chaque barre est un échantillon ; les couleurs montrent la
+part de chaque phylum ou genre. Comparez les deux panneaux : une bactérie est-elle
+clairement plus fréquente chez les patients ? Regardez aussi la **variabilité** à l'intérieur
+de chaque groupe : deux personnes du même groupe peuvent avoir des profils très différents.
+
+```{r top-genera-table}
+# Abondance relative moyenne (%) des genres principaux dans chaque groupe
+df_genus %>% filter(Genus %in% top_genera) %>%
+  group_by(Genus, group) %>% summarise(mean_percent = round(mean(Abundance), 1)) %>%
+  tidyr::pivot_wider(names_from = group, values_from = mean_percent) %>%
+  arrange(desc(Control + Cancer)) %>% knitr::kable()
+```
+
+> **Exercice d'observation : qui domine chez les témoins ?** Regardez les genres les plus
+> abondants chez les témoins : *Pseudomonas*, *Acinetobacter*, *Delftia*,
+> *Escherichia-Shigella*, *Janthinobacterium*... Beaucoup font partie du **"kitome"**, les
+> bactéries des réactifs et des kits d'extraction. Les biopsies des témoins ont très peu
+> d'ADN bactérien, donc ces contaminants y prennent une grande place. Chez les patients, on
+> voit surtout des bactéries de la **bouche** (*Streptococcus*, *Prevotella*, *Veillonella*,
+> *Rothia*)... et aussi des bactéries typiques de l'**intestin** (*Blautia*, *Ruminococcus*,
+> *Bifidobacterium*), étonnantes dans une bronche. Question pour vous : les selles des
+> mêmes patients ont été séquencées dans la même étude ; quelle explication technique
+> pourrait-on imaginer ? (indice : contamination croisée entre échantillons pendant la
+> préparation ou le séquençage).
+>
+> **Leçon principale :** une partie de la "différence" entre les groupes peut venir de la
+> **quantité** d'ADN bactérien (faible chez les témoins) et de la contamination, et pas de la
+> biologie du cancer.
+
+# Étape 5 - Diversité alpha : quelle diversité dans chaque échantillon ?
+
+La **diversité alpha** décrit la diversité **à l'intérieur** d'un échantillon, comme la
+diversité des plantes dans **un seul** jardin :
+
+- **Observed** = nombre d'ASV différents (la richesse) : combien d'espèces de plantes ;
+- **Shannon** = richesse **et** équitabilité : les lectures sont-elles bien partagées entre ASV ?
+  Un jardin avec 10 espèces en quantités égales est plus diversifié qu'un jardin avec 10
+  espèces où l'une couvre 95 % de la surface ;
+- **Simpson** = probabilité que deux lectures tirées au hasard appartiennent à deux ASV
+  différents (de 0 à 1).
+
+## Les indices de diversité : définitions et exemples
+
+Il existe plusieurs indices, car chacun regarde le jardin d'une façon différente. Dans le
+tableau, **p** est la proportion d'un ASV dans l'échantillon (ses lectures divisées par le
+total), **S** le nombre d'ASV présents et **ln** le logarithme naturel.
+
+| Indice | Ce qu'il mesure | Formule | Exemple de la vie courante |
+|---|---|---|---|
+| **Observed** (richesse, S) | le nombre d'ASV présents | S = nombre d'ASV avec au moins 1 lecture | compter les espèces de plantes d'un jardin, sans regarder combien il y a de pieds |
+| **Chao1** | la richesse estimée, y compris les ASV rares jamais vus | S + F1² / (2 x F2), F1 = ASV vus 1 fois, F2 = vus 2 fois | estimer le nombre d'oiseaux d'une forêt à partir de ceux vus une ou deux fois seulement |
+| **Shannon** (H) | la richesse **et** l'équilibre | H = -Σ p x ln(p) | une classe où tout le monde parle est plus "diverse" qu'une classe où un seul élève parle |
+| **Pielou** (J) | l'équilibre seul, de 0 à 1 | J = H / ln(S) | 1 = toutes les espèces en même quantité |
+| **Simpson** (1 - D) | la chance que 2 lectures tirées au hasard soient de 2 ASV différents | 1 - Σ p² | tirer 2 billes d'un sac : sont-elles de couleurs différentes ? |
+| **Inverse Simpson** | le nombre "effectif" d'ASV | 1 / Σ p² | un jardin dominé par une espèce "vaut" moins d'espèces qu'il n'en contient |
+
+**Attention à Chao1 avec DADA2 :** DADA2 retire les singletons (les séquences vues une
+seule fois). Chao1 a besoin d'eux : avec des ASV DADA2, Chao1 donne presque la même valeur
+qu'Observed et ne doit pas être interprété. C'est pourquoi nous ne l'utilisons pas ici.
+
+**Un petit exemple à la main.** Deux jardins de 100 plantes ont les **mêmes 4 espèces**.
+Le jardin A est équilibré (25 plantes de chaque espèce) ; dans le jardin B, une espèce
+domine (85 roses et 5 plantes de chacune des autres). Calculons les indices nous-mêmes,
+puis avec le package vegan pour vérifier.
+
+```{r diversity-example}
+# Deux jardins imaginaires de 100 plantes, avec les mêmes 4 espèces
+jardins <- rbind(
+  Jardin_A = c(Rose = 25, Jasmin = 25, Menthe = 25, Basilic = 25),   # équilibré
+  Jardin_B = c(Rose = 85, Jasmin = 5,  Menthe = 5,  Basilic = 5))    # une espèce domine
+
+# Proportions p : chaque ligne fait 1 (100 %)
+p <- jardins / rowSums(jardins)
+S <- rowSums(jardins > 0)                       # nombre d'espèces présentes
+
+indices_exemple <- data.frame(
+  Observed      = S,
+  Shannon       = -rowSums(p * log(p)),             # H = -somme(p x ln p)
+  Shannon_vegan = vegan::diversity(jardins, "shannon"),  # même résultat avec vegan
+  Pielou        = -rowSums(p * log(p)) / log(S),     # équilibre de 0 à 1
+  Simpson       = 1 - rowSums(p^2),                  # 1 - somme(p au carré)
+  InvSimpson    = 1 / rowSums(p^2))                  # nombre "effectif" d'espèces
+knitr::kable(round(indices_exemple, 2))
+```
+
+**Comment lire ce résultat :** les deux jardins ont la **même richesse** (Observed = 4),
+mais le jardin B est moins divers pour tous les autres indices : Shannon passe de 1,39 à
+0,59, Pielou de 1 à 0,42, Simpson de 0,75 à 0,27, et l'Inverse Simpson dit que B "vaut"
+à peine 1,4 espèce. **Shannon** réagit surtout aux espèces rares, **Simpson** surtout aux
+espèces dominantes : c'est pourquoi on regarde souvent les deux. Dans nos biopsies, les
+mêmes indices sont calculés ci-dessous sur les ASV, exactement de la même manière.
+
+## Raréfaction
+
+La richesse dépend de la profondeur : plus de lectures, plus d'ASV trouvés. Pour comparer
+équitablement, on **raréfie** : on tire au hasard le même nombre de lectures dans chaque
+échantillon (la plus petite profondeur). C'est comme demander aux deux pêcheurs de ne
+garder que leurs 50 premiers poissons avant de compter les espèces.
+
+```{r rarefy}
+min_depth <- min(sample_sums(ps_bact))
+ps_rare <- rarefy_even_depth(ps_bact, sample.size = min_depth, rngseed = 123, verbose = FALSE)
+cat("Every sample now has", min_depth, "reads. ASVs kept:", ntaxa(ps_rare), "\n")
+```
+
+**Limite :** la raréfaction jette des lectures. Les résultats de diversité alpha sont donc
+indicatifs, surtout si la profondeur minimale est basse.
+
+```{r alpha}
+alpha <- estimate_richness(ps_rare, measures = c("Observed", "Shannon", "Simpson"))
+alpha$Sample <- rownames(alpha)
+alpha$group  <- sample_data(ps_rare)$group
+write.csv(alpha, file.path(out_dir, "alpha_diversity.csv"), row.names = FALSE)
+knitr::kable(alpha[order(alpha$group), ], digits = 2, row.names = FALSE)
+```
+
+## Test entre deux groupes indépendants
+
+Les deux groupes sont des personnes différentes, donc on utilise le **test de Wilcoxon-Mann-
+Whitney** (non apparié). Il range toutes les valeurs de la plus petite à la plus grande et
+regarde si un groupe se retrouve surtout en haut du classement. C'est comme un concours de
+course : si les 5 premiers à l'arrivée sont tous de la même équipe, ce n'est sûrement pas
+le hasard. Il ne suppose pas une distribution normale (gaussienne), ce qui est plus sûr avec
+seulement 5 personnes par groupe.
+
+```{r alpha-test}
+alpha_tests <- data.frame()
+for (index in c("Observed", "Shannon", "Simpson")) {
+  control <- alpha[alpha$group == "Control", index]
+  cancer  <- alpha[alpha$group == "Cancer",  index]
+  test <- wilcox.test(cancer, control, exact = FALSE)
+  alpha_tests <- rbind(alpha_tests, data.frame(
+    Index = index,
+    Median_control = round(median(control), 2),
+    Median_cancer  = round(median(cancer), 2),
+    p_value = signif(test$p.value, 3)))
+}
+knitr::kable(alpha_tests)
+```
+
+```{r alpha-plot, fig.height = 4.5}
+alpha_long <- tidyr::pivot_longer(alpha, cols = c(Observed, Shannon, Simpson),
+                                  names_to = "Index", values_to = "Value")
+p_alpha <- ggplot(alpha_long, aes(x = group, y = Value)) +
+  geom_boxplot(aes(fill = group), alpha = 0.4, outlier.shape = NA) +
+  geom_jitter(aes(colour = group), width = 0.1, size = 2) +   # un point = une personne
+  facet_wrap(~ Index, scales = "free_y") +
+  scale_fill_manual(values = group_colours) + scale_colour_manual(values = group_colours) +
+  labs(title = "Alpha diversity (rarefied data)", x = NULL, y = NULL) +
+  theme_bw() + theme(legend.position = "none")
+p_alpha
+save_figure(p_alpha, "alpha_diversity", width = 9, height = 4.5)
+```
+
+**Comment lire ce graphique :** chaque point est une personne. La boîte montre la médiane et
+la moitié centrale des valeurs. Une p-value sous 0,05 veut dire qu'une telle séparation
+entre les deux groupes serait rare si le hasard seul jouait. Avec 5 personnes par groupe, la
+plus petite p-value possible est environ 0,01 : il faut que les deux groupes soient presque
+complètement séparés.
+
+# Étape 6 - Diversité bêta : les communautés sont-elles différentes ?
+
+La **diversité bêta** compare les échantillons **entre eux**, comme comparer deux jardins
+voisins. On utilise la **dissimilarité de Bray-Curtis** : 0 = deux échantillons ont
+exactement la même composition, 1 = ils n'ont rien en commun. On la calcule sur les
+abondances relatives, donc les différences de profondeur ne gênent pas.
+
+Les deux mesures de diversité bêta les plus courantes :
+
+| Mesure | Ce qu'elle compare | Formule | Exemple de la vie courante |
+|---|---|---|---|
+| **Bray-Curtis** | les abondances | 1 - 2 x (somme des minimums communs) / (total A + total B) | comparer deux paniers du marché en comptant les fruits de chaque sorte |
+| **Jaccard** | la présence ou l'absence | 1 - (espèces communes) / (espèces au total) | comparer deux listes de courses, sans regarder les quantités |
+
+Reprenons les deux jardins de l'étape 5 :
+
+```{r beta-example}
+# Bray-Curtis : tient compte du nombre de plantes de chaque espèce
+vegan::vegdist(jardins, method = "bray")
+# Jaccard (binary = TRUE) : seulement présence / absence des espèces
+vegan::vegdist(jardins, method = "jaccard", binary = TRUE)
+```
+
+**Comment lire ce résultat :** Bray-Curtis vaut **0,6** : les jardins sont assez différents,
+car l'un est dominé par les roses. Jaccard vaut **0** : les deux jardins ont exactement les
+mêmes espèces. Le choix de la mesure change donc la conclusion. Pour le microbiome, on
+utilise surtout Bray-Curtis (abondances) et on peut ajouter Jaccard pour voir si les
+**mêmes** bactéries sont présentes.
+
+## Ordination : PCoA et NMDS
+
+Avec 10 échantillons, on a 45 distances par paires : illisible dans un tableau. Une
+**ordination** dessine les échantillons comme des points sur une carte en 2 dimensions, où
+les points proches ont des communautés similaires. C'est comme dessiner la carte de la
+Tunisie seulement à partir du tableau des distances entre villes : Tunis et Ariana seront
+proches, Tunis et Tozeur seront loin.
+
+- **PCoA** (Analyse en Coordonnées Principales) : les axes montrent le % de variation qu'ils expliquent.
+- **NMDS** : place les points en respectant l'**ordre** des distances ; le **stress** indique
+  la qualité de la carte (< 0,2 est acceptable).
+
+```{r beta}
+ps_rel <- transform_sample_counts(ps_bact, function(x) x / sum(x))
+bray   <- phyloseq::distance(ps_rel, method = "bray")
+
+pcoa <- ordinate(ps_rel, method = "PCoA", distance = bray)
+nmds <- ordinate(ps_rel, method = "NMDS", distance = bray, trace = FALSE)
+cat("NMDS stress:", round(nmds$stress, 3), "\n")
+```
+
+```{r beta-plot, fig.height = 5}
+p_pcoa <- plot_ordination(ps_rel, pcoa, color = "group") +
+  geom_point(size = 3) + stat_ellipse(aes(group = group), type = "t", linetype = 2, level = 0.8) +
+  scale_colour_manual(values = group_colours) +
+  labs(title = "PCoA - Bray-Curtis", colour = NULL) + theme_bw()
+
+p_nmds <- plot_ordination(ps_rel, nmds, color = "group") +
+  geom_point(size = 3) + scale_colour_manual(values = group_colours) +
+  labs(title = paste("NMDS - stress", round(nmds$stress, 2)), colour = NULL) + theme_bw()
+
+p_pcoa
+save_figure(p_pcoa, "beta_diversity_PCoA", width = 7, height = 5)
+```
+
+**Comment lire ce graphique :** chaque point est un échantillon. Si les points rouges
+(cancer) et bleus (témoins) forment deux nuages séparés, les communautés diffèrent. Les
+ellipses en pointillé entourent environ 80 % de chaque groupe.
+
+> **Et la NMDS ?** Regardez le stress affiché plus haut. S'il est proche de **0**, la NMDS a
+> "trop bien" réussi : les deux groupes sont si séparés que la méthode écrase les points de
+> chaque groupe les uns sur les autres. C'est comme une carte où toutes les villes du nord
+> seraient dessinées au même endroit : la carte n'est plus utile. Dans ce cas, on montre
+> seulement la PCoA (le graphique NMDS est gardé dans le code, `p_nmds`, pour comparer).
+
+> **Pourquoi pas UniFrac ?** Les distances UniFrac utilisent un **arbre phylogénétique** des
+> ASV. Nous n'avons pas construit d'arbre dans cet atelier, donc on utilise seulement
+> Bray-Curtis. Ne calculez jamais UniFrac sans un arbre valide.
+
+## PERMANOVA : la différence est-elle significative ?
+
+La **PERMANOVA** (`adonis2` dans vegan) teste si les groupes ont des **centres** différents
+dans l'espace des distances. Elle donne :
+
+- **R²** = la part de la variation totale expliquée par le groupe (la **taille de l'effet**) ;
+- la **p-value**, obtenue par **permutations** : on mélange les étiquettes "Cancer" et
+  "Control" plusieurs fois, comme un tirage au sort, et on regarde si la vraie différence
+  est plus grande que celles obtenues au hasard.
+
+```{r permanova}
+meta_df <- data.frame(sample_data(ps_rel))
+
+perm <- adonis2(bray ~ group, data = meta_df, permutations = 999)
+perm
+```
+
+**Comment lire ce résultat :** regardez les colonnes `R2` et `Pr(>F)` (p-value). Un R² de 0,30
+voudrait dire que le groupe explique 30 % des différences entre échantillons ; le reste vient
+des différences entre personnes.
+
+## Test de dispersion (betadisper)
+
+La PERMANOVA peut aussi donner un résultat significatif si un groupe est simplement **plus
+variable** (plus étalé) que l'autre, même avec le même centre. C'est comme deux classes avec
+la même moyenne de 12/20 : dans l'une toutes les notes sont entre 11 et 13, dans l'autre
+elles vont de 2 à 20. `betadisper` vérifie cela.
+
+```{r betadisper, fig.height = 4}
+disp <- betadisper(bray, meta_df$group)
+permutest(disp, permutations = 999)
+boxplot(disp, col = group_colours, main = "Distance to group centre (dispersion)", xlab = "")
+```
+
+**Comment lire ce résultat :** si ce test n'est **pas** significatif (p > 0,05), les groupes
+ont un étalement semblable, et une PERMANOVA significative indique une vraie différence de
+composition. S'il **est** significatif, une partie du résultat de la PERMANOVA peut venir
+d'une variabilité différente.
+
+# Étape 7 - Quelles bactéries diffèrent ? (DESeq2)
+
+**DESeq2** a été créé pour le RNA-seq mais il est souvent utilisé pour les données de
+**comptage** du microbiome. Il :
+
+1. estime un **facteur de taille** par échantillon pour corriger la profondeur de séquençage
+   (comme comparer les dépenses de deux familles en tenant compte de leurs revenus) ;
+2. modélise les comptages avec une loi **binomiale négative** ;
+3. teste chaque taxon et donne un **log2 fold change** (log2FC) et une p-value ajustée.
+
+Les règles que nous suivons :
+
+- DESeq2 a besoin des **comptages bruts**, jamais des abondances relatives ni des données raréfiées.
+- Formule `~ group` : on compare les patients aux témoins.
+- Niveau de référence = **Control**, donc log2FC > 0 veut dire **plus abondant chez les patients**.
+- On travaille au niveau du **genre** et on garde les genres présents dans au moins 3
+  échantillons : tester des centaines d'ASV rares ajoute seulement du bruit.
+- Comme on teste beaucoup de genres, les p-values sont corrigées pour les **tests multiples**
+  (Benjamini-Hochberg, colonne `padj`). Acheter 100 billets de loterie augmente la chance
+  de gagner par hasard : la correction en tient compte. On utilise `padj < 0.05`.
+
+```{r deseq}
+ps_genus_counts <- tax_glom(ps_bact, taxrank = "Genus", NArm = TRUE)
+keep <- genefilter_sample(ps_genus_counts, filterfun_sample(function(x) x > 0), A = 3)
+ps_deseq <- prune_taxa(keep, ps_genus_counts)
+cat("Genera tested:", ntaxa(ps_deseq), "\n")
+
+dds <- phyloseq_to_deseq2(ps_deseq, ~ group)
+
+# Facteurs de taille "poscounts" : recommandés pour le microbiome, qui contient beaucoup de zéros
+dds <- estimateSizeFactors(dds, type = "poscounts")
+dds <- tryCatch(DESeq(dds, fitType = "parametric", quiet = TRUE),
+                error = function(e) DESeq(dds, fitType = "mean", quiet = TRUE))
+
+res <- results(dds, contrast = c("group", "Cancer", "Control"), alpha = 0.05)
+summary(res)
+```
+
+```{r deseq-table}
+res_df <- data.frame(res)
+res_df$Genus  <- as.character(tax_table(ps_deseq)[rownames(res_df), "Genus"])
+res_df$Phylum <- as.character(tax_table(ps_deseq)[rownames(res_df), "Phylum"])
+res_df <- res_df[order(res_df$pvalue), c("Genus", "Phylum", "baseMean",
+                                         "log2FoldChange", "lfcSE", "pvalue", "padj")]
+write.csv(res_df, file.path(out_dir, "DESeq2_genus_Cancer_vs_Control.csv"))
+
+knitr::kable(head(res_df, 15), digits = 3, row.names = FALSE,
+             caption = "15 genera with the smallest p-values")
+```
+
+```{r deseq-plot, fig.height = 5}
+sig <- res_df[!is.na(res_df$padj) & res_df$padj < 0.05, ]
+
+if (nrow(sig) > 0) {
+  sig$Direction <- ifelse(sig$log2FoldChange > 0, "Higher in cancer", "Higher in control")
+  sig_plot <- head(sig[order(sig$padj), ], 20)   # au maximum les 20 genres les plus significatifs
+  p_deseq <- ggplot(sig_plot, aes(x = log2FoldChange, y = reorder(Genus, log2FoldChange),
+                             fill = Direction)) +
+    geom_col() + geom_vline(xintercept = 0) +
+    scale_fill_manual(values = c("Higher in cancer" = "#C0392B", "Higher in control" = "#2E86AB")) +
+    labs(title = "Top genera different between cancer and control (padj < 0.05)",
+         x = "log2 fold change (cancer vs control)", y = NULL, fill = NULL) + theme_bw()
+} else {
+  # Aucun genre significatif : on montre à la place le "volcano plot" de tous les genres testés
+  p_deseq <- ggplot(res_df, aes(x = log2FoldChange, y = -log10(pvalue))) +
+    geom_point(colour = "grey40") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+    labs(title = "Volcano plot - no genus with padj < 0.05",
+         x = "log2 fold change (cancer vs control)", y = "-log10(p-value)") + theme_bw()
+}
+p_deseq
+save_figure(p_deseq, "DESeq2_genus", width = 8, height = 5)
+```
+
+**Comment lire ce résultat :**
+
+- `log2FoldChange` = 1 veut dire **2 fois** plus chez les patients ; -1 veut dire 2 fois moins ;
+  3 veut dire 8 fois plus (2 x 2 x 2).
+- `padj` est la p-value corrigée pour les nombreux tests. Seul `padj < 0.05` est
+  considéré comme significatif.
+- `r nrow(sig)` genre(s) sur `r ntaxa(ps_deseq)` atteignent `padj < 0.05` dans cette analyse.
+
+> **Trop beau pour être vrai ?** Si une grande partie des genres testés sort "significative",
+> il faut se méfier, pas se réjouir. Ici trois raisons l'expliquent : (1) les échantillons ont
+> été **choisis** pour être différents ; (2) les témoins ont **beaucoup moins** de lectures
+> bactériennes que les patients ; (3) les données sont **compositionnelles** : si un genre
+> augmente beaucoup, tous les autres paraissent changer. C'est comme un thermomètre qui
+> afficherait 40 °C dans toutes les pièces de la maison : on vérifie d'abord le thermomètre.
+
+## Vérifier avant de croire : qui porte ces genres ?
+
+Une petite p-value ajustée **ne suffit pas**. Avec seulement 5 personnes par groupe et beaucoup
+de zéros, une seule personne avec un comptage très élevé peut produire un résultat
+"significatif" et un fold change énorme (un log2FC de 10 ou plus veut dire plus de 1 000
+fois). C'est comme la moyenne de richesse d'un café où entre un milliardaire : la moyenne
+explose, mais personne d'autre n'est devenu riche. Pour chaque genre significatif, on
+regarde les données brutes : dans combien d'échantillons il est présent, et avec quelle
+abondance ?
+
+```{r deseq-check}
+if (nrow(sig) > 0) {
+  ps_genus_rel_check <- transform_sample_counts(ps_deseq, function(x) 100 * x / sum(x))
+  check <- data.frame()
+  for (id in rownames(sig)) {
+    counts <- as.numeric(otu_table(ps_deseq)[, id])
+    pct    <- as.numeric(otu_table(ps_genus_rel_check)[, id])
+    grp    <- sample_data(ps_deseq)$group
+    check <- rbind(check, data.frame(
+      Genus = sig[id, "Genus"],
+      log2FC = round(sig[id, "log2FoldChange"], 1),
+      Present_in_cancer  = sum(counts[grp == "Cancer"]  > 0),
+      Present_in_control = sum(counts[grp == "Control"] > 0),
+      Max_percent_in_one_sample = round(max(pct), 1),
+      Sample_with_max = sample_names(ps_deseq)[which.max(pct)]))
+  }
+  knitr::kable(head(check[order(-abs(check$log2FC)), ], 10), row.names = FALSE,
+               caption = "10 significant genera with the largest fold changes")
+}
+```
+
+**Comment lire ce tableau :** un genre présent dans peu d'échantillons, ou dominé par un seul
+échantillon, donne un résultat fragile. Posez deux questions :
+
+1. **Le résultat vient-il d'une seule personne ?** Si la plupart des lectures viennent d'un
+   échantillon, la "différence" décrit peut-être cette personne, pas le cancer du poumon.
+2. **Est-ce un contaminant connu ?** Certains genres sont souvent trouvés dans les kits
+   d'extraction d'ADN et les réactifs de PCR, le fameux **"kitome"**, par exemple
+   *Bradyrhizobium*, *Ralstonia*, *Burkholderia*, *Sphingomonas*, *Methylobacterium* ou
+   *Pseudomonas*. Les contaminants sont typiquement **plus abondants dans les échantillons
+   avec le moins de lectures** : moins il y a de vrai ADN bactérien, plus l'ADN des réactifs
+   pèse lourd. C'est comme une pincée de sel : invisible dans une grande marmite, mais très
+   forte dans une petite tasse.
+
+```{r contaminant-depth, fig.height = 4}
+# Abondance relative des contaminants typiques en fonction de la profondeur de séquençage
+kitome <- c("Bradyrhizobium", "Ralstonia", "Burkholderia-Caballeronia-Paraburkholderia",
+            "Sphingomonas", "Methylobacterium-Methylorubrum", "Pseudomonas", "Cutibacterium")
+ps_genus_all_rel <- transform_sample_counts(ps_genus_counts, function(x) 100 * x / sum(x))
+is_kitome <- tax_table(ps_genus_all_rel)[, "Genus"] %in% kitome
+kit_df <- data.frame(Sample = sample_names(ps_genus_all_rel),
+                     Group  = sample_data(ps_genus_all_rel)$group,
+                     Reads  = sample_sums(ps_bact),
+                     Kitome_percent = colSums(t(otu_table(ps_genus_all_rel))[is_kitome, , drop = FALSE]))
+p_kit <- ggplot(kit_df, aes(x = Reads, y = Kitome_percent, colour = Group)) +
+  geom_point(size = 3) + scale_x_log10() + scale_colour_manual(values = group_colours) +
+  labs(title = "Typical reagent contaminants versus sequencing depth",
+       x = "Bacterial reads in the sample (log scale)", y = "Known contaminant genera (%)") +
+  theme_bw()
+p_kit
+save_figure(p_kit, "contaminants_vs_depth", width = 7, height = 4)
+cor.test(log10(kit_df$Reads), kit_df$Kitome_percent, method = "spearman", exact = FALSE)
+```
+
+**Comment lire ce graphique :** si les points descendent de gauche à droite (plus de
+contaminants dans les échantillons avec moins de lectures, corrélation négative), une partie
+du signal est probablement une contamination par les réactifs. C'est exactement pourquoi
+les études à faible biomasse **doivent** séquencer et analyser des témoins négatifs (avec
+`decontam`).
+
+**Limites de DESeq2 pour le microbiome :** les données de microbiome sont **compositionnelles**
+(des pourcentages qui font 100 % au total). C'est comme une pizza : si une part grandit,
+les autres paraissent plus petites, même si elles n'ont pas changé. Elles sont aussi très
+creuses (beaucoup de zéros) et, ici, à faible biomasse. Les résultats doivent être confirmés
+par une autre méthode (par exemple ANCOM-BC ou ALDEx2) et dans une cohorte indépendante.
+
+# Étape 8 - Interprétation biologique : prudence !
+
+**Ce que nous pouvons dire :** dans ces 10 biopsies bronchiques, nous avons décrit les
+différences de diversité et de composition entre 5 patients atteints de cancer du poumon et
+5 témoins sans cancer, et nous avons appris à vérifier chaque résultat.
+
+**Ce que nous ne pouvons pas dire :**
+
+1. **Les échantillons ont été choisis pour montrer une différence.** Parmi 41 biopsies, nous
+   avons gardé les 10 qui séparent le mieux les groupes. C'est comme juger une équipe de
+   football en ne regardant que ses 5 plus beaux buts : la différence est exagérée. Les
+   p-values de cet atelier ne sont **pas** des résultats scientifiques. Pour conclure, il
+   faut analyser **tous** les échantillons, choisis **avant** de regarder les résultats.
+2. **Association n'est pas causalité.** Il y a plus de pompiers sur les grands incendies, mais
+   les pompiers ne causent pas les incendies. Une bactérie plus abondante chez les patients
+   peut être une *conséquence* de la tumeur (oxygène, mucus, nécrose différents), pas une cause.
+3. **Pas un biomarqueur.** 5 personnes par groupe, c'est un très petit jeu de données. Un
+   biomarqueur demande de grandes cohortes, une validation dans des populations
+   indépendantes et des essais cliniques.
+4. **Faible biomasse et contamination.** Une biopsie bronchique contient très peu d'ADN
+   bactérien. Sans témoins négatifs (decontam), certaines "bactéries" peuvent être des
+   contaminants des réactifs.
+5. **Bactéries orales.** Des genres comme *Streptococcus*, *Prevotella* ou *Veillonella* sont
+   typiques de la bouche. Ils atteignent les bronches par micro-aspiration (une vraie voie
+   biologique), mais aussi par le bronchoscope, qui passe par la bouche.
+6. **Facteurs de confusion.** Les patients et les témoins sont des personnes différentes :
+   le **tabac**, l'âge, le sexe, les antibiotiques, la BPCO ou la raison de la bronchoscopie
+   chez les témoins peuvent tous expliquer une partie des différences. Ici, nous n'avons pas
+   ces informations : c'est une limite importante.
+7. **Le 16S ne mesure pas la fonction.** Nous savons *qui* est là (souvent seulement au
+   niveau du genre), pas *ce qu'ils font*. C'est comme connaître la liste des habitants d'un
+   immeuble sans connaître leur métier. Les questions de fonction demandent la
+   métagénomique shotgun ou la métatranscriptomique.
+8. **Ne pas mélanger les types d'échantillons.** Biopsie bronchique, liquide de LBA, crachat et
+   selles ont des biomasses et des communautés complètement différentes. Ils doivent être
+   analysés séparément.
+
+# Résumé de la partie 2
+
+```{r final-summary, echo = FALSE}
+data.frame(
+  Analysis = c("Samples (Cancer / Control)", "ASVs after cleaning",
+               "Alpha diversity (Wilcoxon, Shannon)", "PERMANOVA cancer vs control",
+               "Genera tested with DESeq2", "Genera with padj < 0.05"),
+  Result = c(paste(sum(meta_df$group == "Cancer"), "/", sum(meta_df$group == "Control")),
+             ntaxa(ps_bact),
+             paste("p =", alpha_tests$p_value[alpha_tests$Index == "Shannon"]),
+             paste0("R2 = ", round(perm$R2[1], 3), ", p = ", perm$`Pr(>F)`[1]),
+             ntaxa(ps_deseq),
+             nrow(sig))
+)
+```
+
+```{r save}
+saveRDS(ps_bact, file.path(out_dir, "phyloseq_bacteria.rds"))
+list.files(out_dir); list.files(fig_dir)
+```
+
+# Versions des logiciels
+
+```{r session}
+sessionInfo()
+```
