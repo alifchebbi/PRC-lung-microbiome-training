@@ -1,4 +1,4 @@
-# NGS et microbiome 2026 : analyse 16S rRNA reproductible du cancer du poumon avec R - ISBST-UMA
+# NGS et microbiome 2026 : analyse 16S rRNA reproductible du cancer du poumon avec R - ISBST-UMA (Day 1)
 
 ## Téléchargements
 
@@ -9,7 +9,7 @@
 
 **PRC "Microbiote et cancer du poumon"** (PI : Pr. Soumaya Kouidhi)
 ISBST, Université de la Manouba - **vendredi 13 novembre 2026**
-Formateur : Dr. Alif Chebbi (Day 2) 
+Formateur : Dr. Alif Chebbi (Day 1) 
 
 Cet atelier montre, pas à pas, comment analyser des données de séquençage 16S rRNA
 avec R : des fichiers FASTQ bruts jusqu'aux bactéries qui diffèrent entre la bronche atteinte de patients
@@ -186,4 +186,4 @@ microbiome, vegan, ggplot2, dplyr, tidyr, readr, patchwork, ape, here, rmarkdown
 
 ## Remerciements
 
-Un grand merci au **Dr. Houcemeddine Othman**, qui a animé la troisième journée (Day 3) de la formation, pour cette journée remarquable et pour sa précieuse collaboration.
+Un grand merci au **Dr. Houcemeddine Othman**, qui a animé la troisième journée (Day 2) de la formation, pour cette journée remarquable et pour sa précieuse collaboration.
